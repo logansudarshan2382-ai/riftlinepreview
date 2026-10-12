@@ -537,7 +537,7 @@ io.on('connection', socket => {
     const hit = cast(me, o, dir, w.range), t = hit.t;
     socket.broadcast.emit('fx', {                                                    // let everyone else see the tracer
       a: [r2(me.x + dir.x * .7), r2(me.y + BODY.eye + dir.y * .7), r2(me.z + dir.z * .7)],
-      b: [r2(o.x + dir.x * t), r2(o.y + dir.y * t), r2(o.z + dir.z * t)], f: me.faction, s: profOf(me).eq.weapon
+      b: [r2(o.x + dir.x * t), r2(o.y + dir.y * t), r2(o.z + dir.z * t)], f: me.faction, s: profOf(me).eq.weapon, i: me.id
     });
     if (hit.who) hurt(me, hit.who, w.damage);
     if (me.alive && me.ammos[me.wi] <= 0) startReload(me);
