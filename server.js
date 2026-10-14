@@ -49,7 +49,18 @@ const REGION = (process.env.REGION || 'US').toUpperCase().replace(/[^A-Z]/g, '')
 const HP = 100, RESPAWN_MS = 3000, INTERMISSION_MS = 8000, SWITCH_MS = 350;
 const LIMIT = { tdm: Number(process.env.TDM_LIMIT) || 20, ffa: Number(process.env.FFA_LIMIT) || 10 };   // kills needed to win
 const BODY = { r: .4, h: 1.8, eye: 1.62 };
-const VEH = { hx: 1.3, hz: 2.5, h: 1.6, maxSpeed: 16, maxReverse: 6, useRange: 1.8 };
+const VEH = { hx: 1.3, hz: 2.5, h: 1.6, maxSpeed: 22, maxReverse: 6, useRange: 1.8 };
+const VTYPES = {   // vehicle classes: footprint, height and speed limits (m/s). A ground car is fast and runs people over; the helicopter flies; the mech walks.
+  car:  { hx: 1.3, hz: 2.5, h: 1.6, maxSpeed: 22, maxReverse: 6 },
+  heli: { hx: 1.5, hz: 3.4, h: 2.6, maxSpeed: 20, maxReverse: 20 },
+  mech: { hx: 1.5, hz: 1.5, h: 5.6, maxSpeed: 4.5, maxReverse: 4.5 }
+};
+const vd = v => VTYPES[v.type] || VTYPES.car;
+const VWEAPONS = {   // what a driver's left click fires. Helicopter rockets are slow; the mech's miniguns heat up (+2.2 a shot, cooling 18 a second, locked for 2.5 s at 100)
+  heli: { damage: 100, headshotMultiplier: 1, fireRateDelay: 1400, range: 300, splash: { radius: 8, damage: 90 } },
+  mech: { damage: 5, headshotMultiplier: 1, fireRateDelay: 45, range: 120, heat: 2.2 }
+};
+const TURRET = { radius: 80, damage: 6, headshotMultiplier: 1, fireRateDelay: 110, range: 80 };   // base turrets: the radius is their scanner dome
 
 // ---- progression: XP, levels, coins and skins, saved per player ----
 const XP_PER_KILL = 100, COINS_PER_KILL = 10, WIN_COINS = 50, LEVEL_UP_COINS = 25, MAX_PROFILES = 5000;
@@ -200,7 +211,7 @@ const MAPS = {
 // It is generated from a fixed seed, so every server builds exactly the same map. In team deathmatch each team spawns deep inside its own base. ----
 function buildFrontier() {
   let seed = 20261013; const R = () => (seed = (seed * 16807) % 2147483647) / 2147483647, between = (a, b) => a + (b - a) * R();
-  const blocks = [], ramps = [], bases = [], spawns = { ffa: [], vanguard: [], horizon: [] }, vehicles = [], pickups = [], low = [];   // pickups: floating weapons, wi = index into WEAPONS
+  const blocks = [], ramps = [], bases = [], spawns = { ffa: [], vanguard: [], horizon: [] }, vehicles = [], pickups = [], low = [], turrets = [];   // pickups: floating weapons, wi = index into WEAPONS
   const free = (x, z, hx, hz, pad = 2.5) => !blocks.some(o => Math.abs(x - o.x) < hx + o.hx + pad && Math.abs(z - o.z) < hz + o.hz + pad) && !ramps.some(r => Math.abs(x - r.x) < hx + r.hx + pad && Math.abs(z - r.z) < hz + r.hz + pad);
   const mid = (x, z, hx, hz, h, kind, y = 0) => { const b = B(x, z, hx, hz, h, kind, y); blocks.push(b); return b; };
   // The bases are written once in base coordinates (d = metres in from the map edge) and mirrored for the other team. `t` marks a block as a team's, which the browser lights up.
@@ -220,7 +231,8 @@ function buildFrontier() {
     for (let i = 0; i < 10; i++) { const x = between(-60, 60), d = between(52, 112); if (Math.abs(x) > 14 && !(d > 90 && Math.abs(Math.abs(x) - 30) < 8) && free(x, Z(d), 1.5, 1.5)) mid(x, Z(d), 1.2, 1.2, 1.2, 'crate'); }   // loose cover in the yard
     bases.push({ team, x: 0, z: Z(60), hx: 76, hz: 56 });
     spawns[team] = [...spawnRow(-24, Z(12), 24, Z(12), 8), ...spawnRow(-24, Z(20), 24, Z(20), 8)];
-    vehicles.push({ x: -30, z: Z(100), yaw: sz < 0 ? Math.PI : 0 }, { x: 30, z: Z(100), yaw: sz < 0 ? Math.PI : 0 });
+    const vy = sz < 0 ? Math.PI : 0; vehicles.push({ x: -34, z: Z(100), yaw: vy, type: 'car' }, { x: 34, z: Z(100), yaw: vy, type: 'mech' }, { x: 0, z: Z(96), yaw: vy, type: 'heli' });   // a car, a mech and a helicopter in each base
+    for (const x of [-17, 17]) { W(x, 110, 1.4, 1.4, 2, 'building'); turrets.push({ team, x, y: 2, z: Z(110) }); }   // a sentry turret on a pedestal either side of the gate
   }
   // The middle: a stepped ziggurat at the centre, then arenas of trenches, pillar fields, tiered platforms and crate yards, then scattered cover.
   const crate = (x, z, s = between(1, 2.2), h = between(1, 2.4)) => { mid(x, z, s, s, h, 'crate'); if (R() < .35) mid(x + between(-.3, .3), z, s * .7, s * .7, h * .7, 'crate', h); };   // sometimes stacked
@@ -255,7 +267,7 @@ function buildFrontier() {
   for (let t = 0; spawns.ffa.length < 20 && t < 3000; t++) { const x = rd(between(-280, 280)), z = rd(between(-165, 165)); if (free(x, z, 1, 1, 3) && spawns.ffa.every(s => Math.hypot(s.x - x, s.z - z) > 40)) spawns.ffa.push(at(x, 0, z)); }
   return {
     id: 'frontier', name: 'Twin Citadels', half: 300, sky: 0x070b1f, fog: [170, 720], sun: true, big: true, ceiling: 0, lights: [], tint: 0x8d9bc8, accent: 0x7aa2ff, stars: false,
-    ground: 0, bounds: { min: [-300, -2, -300], max: [300, 60, 300], edge: 'wall' }, killZones: [], blocks, ramps, bases, spawns, vehicles, pickups
+    ground: 0, bounds: { min: [-300, -2, -300], max: [300, 60, 300], edge: 'wall' }, killZones: [], blocks, ramps, bases, spawns, vehicles, pickups, turrets
   };
 }
 MAPS.frontier = buildFrontier();
@@ -283,7 +295,7 @@ const MAP_ENV = MAPS[process.env.MAP] ? process.env.MAP : 'rotate';
 // Each room is its own match: its own players, bots, map, vehicles and timers. The functions below are written against "the current room"
 // (players, match, map, vehicles ...), and inRoom(room, fn) points those at one room while fn runs, then saves them back. Node runs one
 // handler at a time, so a room can never see another room's state: bots, hits, spawns and scores all stay inside their own room.
-let players, match, map = MAPS.field, vehicles = [], tick = 0, nextTimer = null, spawnHeld, pickups, cur = null;   // the current room's state
+let players, match, map = MAPS.field, vehicles = [], tick = 0, nextTimer = null, spawnHeld, pickups, turrets, cur = null;   // the current room's state
 let nextId = 1, spawnIx = 0;                                                                              // ids are unique across all rooms
 
 const app = express();
@@ -303,7 +315,7 @@ const W = p => WEAPONS[p.wi];
 const pub = p => ({ id: p.id, name: p.name, lv: lvOf(p), faction: p.faction, kills: p.kills, deaths: p.deaths, alive: p.alive, x: p.x, y: p.y, z: p.z, yaw: p.yaw, pitch: p.pitch, skin: { body: profOf(p).eq.body, weapon: profOf(p).eq.weapon } });
 const matchInfo = () => ({ mode: match.mode, limit: LIMIT[match.mode], state: match.state, team: match.team, map: map.name });
 const sendScores = () => emit('scores', { t: match.team, p: [...players.values()].map(p => [p.id, p.kills, p.deaths, lvOf(p)]) });
-const vehRows = () => vehicles.map(v => [v.id, r2(v.x), r2(v.z), r3(v.yaw), v.driver ? v.driver.id : 0]);
+const vehRows = () => vehicles.map(v => [v.id, r2(v.x), r2(v.z), r3(v.yaw), v.driver ? v.driver.id : 0, r2(v.y || 0)]);
 function profileView(p) {
   const pr = profOf(p), lv = levelInfo(pr.xp);
   return { xp: pr.xp, level: lv.level, into: lv.into, need: lv.need, coins: pr.coins, kills: pr.kills, owned: pr.owned, eq: pr.eq, save: sign(p.token, pr) };
@@ -407,16 +419,16 @@ function rayRamp(o, d, r) {
 // The vehicle box is turned by its yaw, so rotate the ray into the vehicle's own frame first.
 function rayVehicle(o, d, v) {
   const c = Math.cos(v.yaw), s = Math.sin(v.yaw), dx = o.x - v.x, dz = o.z - v.z;
-  return rayBox({ x: dx * c - dz * s, y: o.y, z: dx * s + dz * c }, { x: d.x * c - d.z * s, y: d.y, z: d.x * s + d.z * c }, -VEH.hx, 0, -VEH.hz, VEH.hx, VEH.h, VEH.hz);
+  return rayBox({ x: dx * c - dz * s, y: o.y, z: dx * s + dz * c }, { x: d.x * c - d.z * s, y: d.y, z: d.x * s + d.z * c }, -vd(v).hx, v.y || 0, -vd(v).hz, vd(v).hx, (v.y || 0) + vd(v).h, vd(v).hz);
 }
 function distToVehicle(v, x, z) {   // ground-plane distance from a point to the vehicle's body (0 = touching)
   const c = Math.cos(v.yaw), s = Math.sin(v.yaw), dx = x - v.x, dz = z - v.z;
-  return Math.hypot(Math.max(Math.abs(dx * c - dz * s) - VEH.hx, 0), Math.max(Math.abs(dx * s + dz * c) - VEH.hz, 0));
+  return Math.hypot(Math.max(Math.abs(dx * c - dz * s) - vd(v).hx, 0), Math.max(Math.abs(dx * s + dz * c) - vd(v).hz, 0));
 }
 function exitSpot(v) {   // first free spot beside the vehicle: right, left, behind, in front. It must be on a floor, clear of walls and kill zones
   const c = Math.cos(v.yaw), s = Math.sin(v.yaw), lim = map.half - BODY.r;
   const solid = [...map.blocks.filter(groundBlock), ...map.ramps, ...map.killZones.map(k => ({ x: (k.min[0] + k.max[0]) / 2, z: (k.min[2] + k.max[2]) / 2, hx: (k.max[0] - k.min[0]) / 2, hz: (k.max[2] - k.min[2]) / 2 }))];
-  for (const [lx, lz] of [[VEH.hx + 1, 0], [-VEH.hx - 1, 0], [0, VEH.hz + 1], [0, -VEH.hz - 1]]) {
+  for (const [lx, lz] of [[vd(v).hx + 1, 0], [-vd(v).hx - 1, 0], [0, vd(v).hz + 1], [0, -vd(v).hz - 1]]) {
     const x = v.x + lx * c + lz * s, z = v.z - lx * s + lz * c;
     if (Math.abs(x) <= lim && Math.abs(z) <= lim && surfaceY(map, x, z, .1) > -.05 && !solid.some(b => Math.abs(x - b.x) < b.hx + BODY.r && Math.abs(z - b.z) < b.hz + BODY.r)) return { x, z };
   }
@@ -444,6 +456,7 @@ function cast(shooter, o, d, range) {
   }
   for (const r of map.ramps) { const t = rayRamp(o, d, r); if (t !== null && t < best.t) best = { t, who: null }; }
   for (const v of vehicles) {
+    if (v.driver === shooter) continue;   // never shoot your own vehicle
     const t = rayVehicle(o, d, v);
     if (t !== null && t < best.t) best = { t, who: v.driver && v.driver !== shooter && !friend(v.driver) ? v.driver : null };
   }
@@ -461,12 +474,12 @@ function leaveVehicle(p, notify) {
   const v = vehicles.find(x => x.id === p.vehicle);
   p.vehicle = 0;
   if (!v) return;
-  v.driver = null; v.speed = 0;
+  v.driver = null; v.speed = 0; v.y = 0;   // an empty helicopter settles on the ground
   if (notify) { const s = exitSpot(v); p.x = s.x; p.z = s.z; p.y = 0; p.sock.emit('undrive', { x: s.x, z: s.z }); }
   emit('vehicles', vehRows());
 }
 
-function hurt(shooter, target, dmg, head) {
+function hurt(shooter, target, dmg, head, how) {
   target.hp -= dmg;
   const dead = target.hp <= 0;
   shooter.sock.emit('hit', { kill: dead, head: !!head });
@@ -477,7 +490,7 @@ function hurt(shooter, target, dmg, head) {
   if (match.mode === 'tdm') match.team[shooter.faction]++;
   grant(shooter, XP_PER_KILL, COINS_PER_KILL, 'kill');
   emitYou(target);
-  emit('kill', { k: shooter.id, v: target.id, kn: shooter.name, vn: target.name, kf: shooter.faction, vf: target.faction, kl: lvOf(shooter), vl: lvOf(target), hs: !!head, r: RESPAWN_MS });
+  emit('kill', { k: shooter.id, v: target.id, kn: shooter.name, vn: target.name, kf: shooter.faction, vf: target.faction, kl: lvOf(shooter), vl: lvOf(target), hs: !!head, how: how || '', r: RESPAWN_MS });
   sendScores();
   if (match.mode === 'tdm' && match.team[shooter.faction] >= LIMIT.tdm) endMatch(shooter.faction.toUpperCase() + ' WINS', shooter.faction, [...players.values()].filter(p => p.faction === shooter.faction));
   else if (match.mode === 'ffa' && shooter.kills >= LIMIT.ffa) endMatch(shooter.name + ' WINS', 'ffa', [shooter]);
@@ -519,7 +532,7 @@ function validateMap(m) {
     for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) if (Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y, pts[i].z - pts[j].z) < 3.5) bad.push(name + '#' + i + ' and #' + j + ' are less than 3.5 m apart');
   }
   m.vehicles.forEach((v, i) => {
-    if (m.blocks.some(k => groundBlock(k) && Math.abs(v.x - k.x) < k.hx + VEH.hx && Math.abs(v.z - k.z) < k.hz + VEH.hz)) bad.push('vehicle#' + i + ' is inside a block');
+    if (m.blocks.some(k => groundBlock(k) && Math.abs(v.x - k.x) < k.hx + (VTYPES[v.type || 'car'].hx) && Math.abs(v.z - k.z) < k.hz + (VTYPES[v.type || 'car'].hz))) bad.push('vehicle#' + i + ' is inside a block');
     if (surfaceY(m, v.x, v.z, .1) < -.05) bad.push('vehicle#' + i + ' is not on a floor');
   });
   return bad;
@@ -541,12 +554,12 @@ function startMatch(mode, mapId) {
   clearTimeout(nextTimer);
   map = MAPS[mapId] || map;
   match.mode = mode; match.state = 'live'; match.team = { vanguard: 0, horizon: 0 };
-  vehicles = map.vehicles.map((d, i) => ({ id: i + 1, x: d.x, z: d.z, yaw: d.yaw, speed: 0, driver: null, dirty: false }));
+  vehicles = map.vehicles.map((d, i) => ({ id: i + 1, type: d.type || 'car', x: d.x, y: 0, z: d.z, yaw: d.yaw, speed: 0, driver: null, dirty: false, heat: 0, lockUntil: 0 }));
   for (const p of players.values()) p.vehicle = 0;
   const list = [...players.values()].sort(() => Math.random() - .5), flip = Math.random() < .5 ? 1 : 0;   // random split into teams
   list.forEach((p, i) => { p.kills = p.deaths = 0; p.faction = mode === 'tdm' ? ((i + flip) % 2 ? 'horizon' : 'vanguard') : 'ffa'; });
   emit('map', clientMap(map));
-  pickups = (map.pickups || []).map((d, i) => ({ id: 'm' + i, wi: d.wi, x: d.x, y: d.y, z: d.z, up: true, back: 0, drop: false })); emit('pk', pickupRows());
+  pickups = (map.pickups || []).map((d, i) => ({ id: 'm' + i, wi: d.wi, x: d.x, y: d.y, z: d.z, up: true, back: 0, drop: false })); emit('pk', pickupRows()); makeTurrets();
   emit('vehicles', vehRows());
   emit('match', matchInfo());
   emit('factions', list.map(p => [p.id, p.faction]));
@@ -631,6 +644,11 @@ function botTick(now) {
   for (const p of players.values()) {
     if (!p.bot) continue;
     if (!p.alive || match.state !== 'live') { p.vy = 0; p.panic = null; continue; }
+    if (p.vehicle) { botDrive(p, now, dt); continue; }
+    if (now > (p.boardAt || 0)) {   // an empty vehicle within reach on the way: press E
+      p.boardAt = now + 700; const v = vehicles.find(x => !x.driver && Math.abs((x.y || 0) - p.y) < 3 && distToVehicle(x, p.x, p.z) < 2.2);
+      if (v && Math.random() < .75) { v.driver = p; p.vehicle = v.id; p.reloadEnd = 0; p.drove = now; p.stuck = 0; v.speed = 0; v.dirty = true; emit('vehicles', vehRows()); continue; }
+    }
     let tgt = null, best = Infinity;
     for (const q of players.values()) {
       if (q === p || !q.alive || (match.mode === 'tdm' && q.faction === p.faction)) continue;
@@ -717,19 +735,90 @@ function applyHit(shooter, hit, o, dir, w) {
   }
 }
 
+// ---- vehicles, turrets and the bots that drive ----
+function heatOk(v, w, now) {   // the mech's miniguns: heat builds with every shot, cools 18 a second, and locks the guns for 2.5 s at 100
+  if (!w.heat) return true;
+  v.heat = Math.max(0, (v.heat || 0) - 18 * (now - (v.heatAt || now)) / 1000); v.heatAt = now;
+  if (now < v.lockUntil) return false;
+  v.heat += w.heat; if (v.heat >= 100) { v.heat = 100; v.lockUntil = now + 2500; }
+  return true;
+}
+function tickVehicles(now) {   // roadkill: a fast car that touches an enemy on foot kills them outright, and the driver gets the kill
+  for (const v of vehicles) {
+    const D = v.driver; if (!D || v.type !== 'car' || Math.abs(v.speed) < 7) continue;
+    for (const p of [...players.values()]) {
+      if (p === D || !p.alive || p.vehicle || (match.mode === 'tdm' && p.faction === D.faction)) continue;
+      if (distToVehicle(v, p.x, p.z) < BODY.r && p.y < vd(v).h && p.y + BODY.h > (v.y || 0)) hurt(D, p, 9999, false, 'splat');
+    }
+  }
+}
+function makeTurrets() {   // two sentries at each base entrance, in team deathmatch only
+  turrets = match.mode === 'tdm' ? (map.turrets || []).map((d, i) => ({
+    id: i + 1, x: d.x, y: d.y, z: d.z, faction: d.team, yaw: 0, pitch: 0, nextShot: 0,
+    sh: { id: nextId++, bot: true, name: (d.team === 'vanguard' ? 'Vanguard' : 'Horizon') + ' Sentry', faction: d.team, sock: BOT_SOCK, prof: { xp: 0, coins: 0, eq: { weapon: 'w-issue' } }, kills: 0, deaths: 0, rtt: 0, lv: 0 }
+  })) : [];
+}
+function tickTurrets(now) {   // a turret sweeps its scanner dome; anything hostile inside it (on foot or driving) is tracked and shot
+  for (const t of turrets) {
+    let tgt = null, best = TURRET.radius;
+    for (const q of players.values()) { if (!q.alive || q.faction === t.faction) continue; const d = Math.hypot(q.x - t.x, q.y + 1 - t.y, q.z - t.z); if (d < best) { best = d; tgt = q; } }
+    if (!tgt) continue;
+    const dx = tgt.x - t.x, dy = tgt.y + 1.2 - (t.y + .6), dz = tgt.z - t.z, flat = Math.hypot(dx, dz) || 1, dist = Math.hypot(dx, dy, dz) || 1, want = Math.atan2(-dx, -dz);
+    t.yaw = r3(wrap(t.yaw + clamp(wrap(want - t.yaw), -.22, .22))); t.pitch = r3(clamp(t.pitch + clamp(Math.atan2(dy, flat) - t.pitch, -.15, .15), -.4, 1.2));
+    if (now < t.nextShot || Math.abs(wrap(want - t.yaw)) > .12) continue;
+    const o = { x: t.x, y: t.y + .6, z: t.z }, u = { x: dx / dist, y: dy / dist, z: dz / dist };
+    const look = cast(t.sh, o, u, dist); if (look.who !== tgt && look.t < dist - 1) continue;   // a wall in the way
+    const e = .02 + dist * .0008, d = { x: u.x + (Math.random() - .5) * 2 * e, y: u.y + (Math.random() - .5) * 2 * e, z: u.z + (Math.random() - .5) * 2 * e }, l = Math.hypot(d.x, d.y, d.z);
+    d.x /= l; d.y /= l; d.z /= l; t.nextShot = now + TURRET.fireRateDelay;
+    const hit = cast(t.sh, o, d, TURRET.range), tt = hit.t;
+    emit('fx', { a: [r2(o.x + d.x * .8), r2(o.y + d.y * .8), r2(o.z + d.z * .8)], b: [r2(o.x + d.x * tt), r2(o.y + d.y * tt), r2(o.z + d.z * tt)], f: t.faction, s: 'w-issue', i: 0, e: 0 });
+    applyHit(t.sh, hit, o, d, TURRET);
+  }
+}
+function vehBlocked(v, x, z) {   // a ground vehicle or mech cannot drive through walls or off the map
+  const r = vd(v).hx + .4;
+  if (Math.abs(x) > map.half - 3 || Math.abs(z) > map.half - 3) return true;
+  for (const k of map.blocks) if ((k.y || 0) < 2 && (k.y || 0) + k.h > .3 && Math.abs(x - k.x) < k.hx + r && Math.abs(z - k.z) < k.hz + r) return true;
+  return false;
+}
+// A bot at the wheel: cars charge the nearest enemy (the roadkill check does the rest), helicopters climb to 22 m and rocket from range, mechs walk up and use their miniguns.
+function botDrive(p, now, dt) {
+  const v = vehicles.find(x => x.id === p.vehicle); if (!v) { p.vehicle = 0; return; }
+  let tgt = null, best = Infinity;
+  for (const q of players.values()) { if (q === p || !q.alive || q.vehicle === p.vehicle || (match.mode === 'tdm' && q.faction === p.faction)) continue; const d = Math.hypot(q.x - v.x, q.z - v.z); if (d < best) { best = d; tgt = q; } }
+  if (!tgt || now - p.drove > 45000 || p.stuck > 40) { leaveVehicle(p, true); p.stuck = 0; p.boardAt = now + 8000; return; }   // nobody left to hunt, or stuck: get out
+  const dx = tgt.x - v.x, dz = tgt.z - v.z, flat = Math.hypot(dx, dz) || 1, want = Math.atan2(-dx, -dz), T = vd(v), w = VWEAPONS[v.type];
+  v.yaw = r3(wrap(v.yaw + clamp(wrap(want - v.yaw), -.08, .08)));
+  const sp = v.type === 'car' ? 18 : v.type === 'heli' ? (flat < 70 ? 0 : 14) : (flat < 40 ? 0 : 4.2);
+  const nx = v.x - Math.sin(v.yaw) * sp * dt, nz = v.z - Math.cos(v.yaw) * sp * dt;
+  if (v.type === 'heli' || !vehBlocked(v, nx, nz)) { v.x = nx; v.z = nz; p.stuck = 0; } else { v.yaw = r3(wrap(v.yaw + .5)); p.stuck++; }   // blocked: swing away
+  if (v.type === 'heli') v.y = Math.min(22, (v.y || 0) + 6 * dt);
+  const lim = map.half - T.hx; v.x = r2(clamp(v.x, -lim, lim)); v.z = r2(clamp(v.z, -lim, lim)); v.speed = sp; v.dirty = true;
+  p.x = v.x; p.y = v.y || 0; p.z = v.z; p.yaw = v.yaw;
+  if (!w || flat > w.range * .9 || Math.abs(wrap(want - v.yaw)) > .25 || now < p.nextShot || (v.type === 'heli' && v.y < 15)) return;
+  const side = v.type === 'mech' ? (now / 45 & 1 ? 1 : -1) * 1.1 : 0, c = Math.cos(v.yaw), s = Math.sin(v.yaw);
+  const o = { x: v.x - s * 2.2 + c * side, y: (v.y || 0) + (v.type === 'mech' ? 4.2 : 1.2), z: v.z - c * 2.2 - s * side }, dy = tgt.y + 1.2 - o.y, dist = Math.hypot(dx, dy, dz) || 1;
+  if (!heatOk(v, w, now)) return;
+  const e = .03 + dist * .0012, d = { x: dx / dist + (Math.random() - .5) * 2 * e, y: dy / dist + (Math.random() - .5) * 2 * e, z: dz / dist + (Math.random() - .5) * 2 * e }, l = Math.hypot(d.x, d.y, d.z);
+  d.x /= l; d.y /= l; d.z /= l; p.nextShot = now + w.fireRateDelay + Math.random() * 40;
+  const hit = cast(p, o, d, w.range), t = hit.t;
+  emit('fx', { a: [r2(o.x), r2(o.y), r2(o.z)], b: [r2(o.x + d.x * t), r2(o.y + d.y * t), r2(o.z + d.z * t)], f: p.faction, s: p.prof.eq.weapon, i: p.id, e: w.splash ? w.splash.radius : 0 });
+  applyHit(p, hit, o, d, w);
+}
+
 // ---- rooms and matchmaking ----
 // A "room" is one isolated match, named like Server-US-1. Players are put in a Socket.io room of that name, so every emit() below reaches
 // only that room. Rooms are made on demand and closed after a minute with no humans in them.
 const rooms = new Map(); let roomSeq = 0;
 const emit = (...a) => io.to(cur.id).emit(...a);   // to everyone in the current room
 const humansIn = r => { let n = 0; for (const p of r.players.values()) if (!p.bot) n++; return n; };
-function loadRoom(r) { cur = r; players = r.players; match = r.match; map = r.map; vehicles = r.vehicles; tick = r.tick; nextTimer = r.nextTimer; spawnHeld = r.spawnHeld; pickups = r.pickups; }
+function loadRoom(r) { cur = r; players = r.players; match = r.match; map = r.map; vehicles = r.vehicles; tick = r.tick; nextTimer = r.nextTimer; spawnHeld = r.spawnHeld; pickups = r.pickups; turrets = r.turrets; }
 function inRoom(room, fn) {   // run fn with the shared variables pointing at this room, then save them back
   const prev = cur; loadRoom(room);
-  try { return fn(); } finally { room.map = map; room.vehicles = vehicles; room.tick = tick; room.nextTimer = nextTimer; room.pickups = pickups; if (prev) loadRoom(prev); }
+  try { return fn(); } finally { room.map = map; room.vehicles = vehicles; room.tick = tick; room.nextTimer = nextTimer; room.pickups = pickups; room.turrets = turrets; if (prev) loadRoom(prev); }
 }
 function createRoom() {
-  const room = { id: 'Server-' + REGION + '-' + (++roomSeq), players: new Map(), match: { mode: 'tdm', state: 'live', team: { vanguard: 0, horizon: 0 } }, map: MAPS.field, vehicles: [], tick: 0, nextTimer: null, spawnHeld: new Map(), pickups: [], emptySince: 0 };
+  const room = { id: 'Server-' + REGION + '-' + (++roomSeq), players: new Map(), match: { mode: 'tdm', state: 'live', team: { vanguard: 0, horizon: 0 } }, map: MAPS.field, vehicles: [], tick: 0, nextTimer: null, spawnHeld: new Map(), pickups: [], turrets: [], emptySince: 0 };
   rooms.set(room.id, room);
   inRoom(room, () => startMatch(MODE === 'rotate' ? 'tdm' : MODE, MAP_ENV === 'rotate' ? 'frontier' : MAP_ENV));   // new rooms open on Twin Citadels, then the maps rotate
   console.log('opened ' + room.id + ' (' + room.match.mode + ' on ' + room.map.id + '), ' + rooms.size + ' rooms');
@@ -781,22 +870,22 @@ function connect(socket, room) {
   });
 
   on('shoot', d => {
-    const now = Date.now(), w = W(me);
-    if (!d || !me.alive || me.vehicle || match.state !== 'live' || me.reloadEnd || now < me.nextShot) return;   // fire rate, reload and driving are enforced here
+    const now = Date.now(), veh = me.vehicle ? vehicles.find(x => x.id === me.vehicle) : null, w = veh ? VWEAPONS[veh.type] : W(me);
+    if (!w || !d || !me.alive || match.state !== 'live' || (!veh && me.reloadEnd) || now < me.nextShot) return;   // a car has no gun; fire rate and reload are enforced here   // fire rate, reload and driving are enforced here
     if (!['ox', 'oy', 'oz', 'dx', 'dy', 'dz'].every(k => typeof d[k] === 'number' && Number.isFinite(d[k]))) return;
     const len = Math.hypot(d.dx, d.dy, d.dz);
     if (len < .5) return;
     const o = { x: d.ox, y: d.oy, z: d.oz }, dir = { x: d.dx / len, y: d.dy / len, z: d.dz / len };
-    if (Math.hypot(o.x - me.x, o.y - (me.y + BODY.eye), o.z - me.z) > 6) return;   // the ray must start near the shooter
-    if (me.ammos[me.wi] <= 0) { startReload(me); return; }
-    me.nextShot = now + w.fireRateDelay * .8; me.ammos[me.wi]--;
+    if (Math.hypot(o.x - me.x, o.y - (me.y + (veh ? vd(veh).h * .7 : BODY.eye)), o.z - me.z) > (veh ? 9 : 6)) return;   // the ray must start near the shooter (or the vehicle's guns)
+    if (veh) { if (!heatOk(veh, w, now)) return; me.nextShot = now + w.fireRateDelay * .8; }   // vehicle guns have no ammo; the mech overheats instead
+    else { if (me.ammos[me.wi] <= 0) { startReload(me); return; } me.nextShot = now + w.fireRateDelay * .8; me.ammos[me.wi]--; }
     const hit = cast(me, o, dir, w.range), t = hit.t;
     socket.to(room.id).emit('fx', {                                                    // let everyone else see the tracer
-      a: [r2(me.x + dir.x * .7), r2(me.y + BODY.eye + dir.y * .7), r2(me.z + dir.z * .7)],
+      a: veh ? [r2(o.x), r2(o.y), r2(o.z)] : [r2(me.x + dir.x * .7), r2(me.y + BODY.eye + dir.y * .7), r2(me.z + dir.z * .7)],
       b: [r2(o.x + dir.x * t), r2(o.y + dir.y * t), r2(o.z + dir.z * t)], f: me.faction, s: profOf(me).eq.weapon, i: me.id, e: w.splash ? w.splash.radius : 0
     });
     applyHit(me, hit, o, dir, w);
-    if (me.alive && me.ammos[me.wi] <= 0) startReload(me);
+    if (!veh && me.alive && me.ammos[me.wi] <= 0) startReload(me);
   });
 
   on('reload', () => { if (me.alive && !me.vehicle && match.state === 'live') startReload(me); });
@@ -815,7 +904,7 @@ function connect(socket, room) {
     if (me.vehicle) { leaveVehicle(me, true); return; }
     if (takePickup(me, now)) return;   // a weapon within reach comes before a vehicle
     let best = null, bd = VEH.useRange;
-    for (const v of vehicles) { if (v.driver) continue; const d = distToVehicle(v, me.x, me.z); if (d <= bd) { best = v; bd = d; } }
+    for (const v of vehicles) { if (v.driver || Math.abs((v.y || 0) - me.y) > 3) continue; const d = distToVehicle(v, me.x, me.z); if (d <= bd) { best = v; bd = d; } }
     if (!best) return;
     best.driver = me; me.vehicle = best.id; me.reloadEnd = 0;
     socket.emit('drive', { vid: best.id, x: best.x, z: best.z, yaw: best.yaw });
@@ -827,9 +916,10 @@ function connect(socket, room) {
     if (!v || !d || !me.alive || now - me.lastVeh < 15) return;
     if (![d.x, d.z, d.yaw, d.speed].every(n => typeof n === 'number' && Number.isFinite(n))) return;
     me.lastVeh = now;
-    const lim = map.half - VEH.hx;
-    v.x = r2(clamp(d.x, -lim, lim)); v.z = r2(clamp(d.z, -lim, lim)); v.yaw = r3(wrap(d.yaw)); v.speed = r2(clamp(d.speed, -VEH.maxReverse, VEH.maxSpeed));
-    me.x = v.x; me.z = v.z; me.y = 0; v.dirty = true;
+    const T = vd(v), lim = map.half - T.hx;
+    v.x = r2(clamp(d.x, -lim, lim)); v.z = r2(clamp(d.z, -lim, lim)); v.yaw = r3(wrap(d.yaw)); v.speed = r2(clamp(d.speed, -T.maxReverse, T.maxSpeed));
+    v.y = v.type === 'heli' && Number.isFinite(d.y) ? r2(clamp(d.y, 0, map.bounds.max[1] - 4)) : 0;   // only helicopters leave the ground
+    me.x = v.x; me.z = v.z; me.y = v.y; v.dirty = true;
   });
 
   on('buy', id => {                        // spend coins on a skin; buying also equips it
@@ -876,12 +966,12 @@ function tickRoom() {
     if (p.reloadEnd && now >= p.reloadEnd) finishReload(p);
     if (tick % (TICK_HZ * 2) === 0) { const t0 = now; p.sock.emit('lag', () => { p.rtt = Math.min(1000, Date.now() - t0); }); }
   }
-  botTick(now); tickPickups(now); if (tick % TICK_HZ === 0) balanceBots();   // bots think, and empty slots are filled once a second
+  botTick(now); tickVehicles(now); tickTurrets(now); tickPickups(now); if (tick % TICK_HZ === 0) balanceBots();   // bots think, and empty slots are filled once a second
   if (!players.size) return;
   const list = [...players.values()].map(p => [p.id, p.x, p.y, p.z, p.yaw, p.pitch, p.alive ? 1 : 0, p.vehicle, p.wi]);
-  const moved = vehicles.some(v => v.dirty), rows = moved ? vehRows() : null;
+  const moved = vehicles.some(v => v.dirty), rows = moved ? vehRows() : null, trRows = turrets.length ? turrets.map(t => [t.id, t.yaw, t.pitch]) : null;
   vehicles.forEach(v => { v.dirty = false; });
-  for (const p of players.values()) if (!p.bot) { p.sock.volatile.emit('snapshot', list); if (moved) p.sock.volatile.emit('vehicles', rows); }
+  for (const p of players.values()) if (!p.bot) { p.sock.volatile.emit('snapshot', list); if (moved) p.sock.volatile.emit('vehicles', rows); if (trRows) p.sock.volatile.emit('tr', trRows); }
 }
 setInterval(() => {   // every room ticks on its own, bots included; a room with no humans for a minute is closed (one stays open)
   const now = Date.now();
@@ -898,4 +988,4 @@ createRoom();   // keep one room open so the first player joins at once
 for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { store.flush(); process.exit(0); });   // save on a clean shutdown
 server.listen(PORT, () => console.log(`Riftline server listening on port ${PORT}, mode ${MODE}, map ${MAP_ENV}`));
 
-if (require.main !== module) module.exports = { MAPS, validateMap, surfaceY, rayRamp, rayBox, rampY, clientMap, rooms, inRoom, createRoom, cast, applyHit, hurt, takePickup, WEAPONS };   // lets the tests reach the geometry helpers
+if (require.main !== module) module.exports = { MAPS, validateMap, surfaceY, rayRamp, rayBox, rampY, clientMap, rooms, inRoom, createRoom, cast, applyHit, hurt, takePickup, WEAPONS, tickVehicles, tickTurrets, heatOk, VWEAPONS };   // lets the tests reach the geometry helpers
