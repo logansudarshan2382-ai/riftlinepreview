@@ -53,12 +53,17 @@ const VEH = { hx: 1.3, hz: 2.5, h: 1.6, maxSpeed: 22, maxReverse: 6, useRange: 1
 const VTYPES = {   // vehicle classes: footprint, height and speed limits (m/s). A ground car is fast and runs people over; the helicopter flies; the mech walks.
   car:  { hx: 1.3, hz: 2.5, h: 1.6, maxSpeed: 22, maxReverse: 6 },
   heli: { hx: 1.5, hz: 3.4, h: 2.6, maxSpeed: 20, maxReverse: 20 },
-  mech: { hx: 1.5, hz: 1.5, h: 5.6, maxSpeed: 4.5, maxReverse: 4.5 }
+  mech: { hx: 1.5, hz: 1.5, h: 5.6, maxSpeed: 4.5, maxReverse: 4.5 },
+  tank: { hx: 1.7, hz: 3.0, h: 2.2, maxSpeed: 9, maxReverse: 4 },   // slow, heavy, crushes people it drives over, and fires a shell
+  turret: { hx: 1.4, hz: 1.4, h: 1, maxSpeed: 0, maxReverse: 0 }    // a manned gun nest on top of a pillar: it never moves, the footprint is where you climb out
 };
 const vd = v => VTYPES[v.type] || VTYPES.car;
 const VWEAPONS = {   // what a driver's left click fires. Helicopter rockets are slow; the mech's miniguns heat up (+2.2 a shot, cooling 18 a second, locked for 2.5 s at 100)
   heli: { damage: 100, headshotMultiplier: 1, fireRateDelay: 1400, range: 300, splash: { radius: 8, damage: 90 } },
-  mech: { damage: 5, headshotMultiplier: 1, fireRateDelay: 45, range: 120, heat: 2.2 }
+  mech: { damage: 5, headshotMultiplier: 1, fireRateDelay: 45, range: 120, heat: 2.2 },
+  tank: { damage: 100, headshotMultiplier: 1, fireRateDelay: 1600, range: 300, splash: { radius: 7, damage: 90 } },
+  turret: { damage: 14, headshotMultiplier: 1.5, fireRateDelay: 90, range: 150 },   // a pillar-top gun
+  cargun: { damage: 9, headshotMultiplier: 1.3, fireRateDelay: 75, range: 110 }      // the roof gun of a car, fired by a passenger
 };
 const TURRET = { radius: 80, damage: 6, headshotMultiplier: 1, fireRateDelay: 110, range: 80 };   // base turrets: the radius is their scanner dome
 
@@ -74,16 +79,36 @@ const SKINS = [
   // premium finishes: fx picks the material preset on the client (carbon = woven bump map, chrome = mirror with glowing stripes, camo = see-through refraction)
   { id: 'carbon',   slot: 'body',   name: 'Carbon Fiber',    price: 500,  level: 1, color: 0x70757f, metal: .6,  rough: .35, glow: .4,  fx: 'carbon' },
   { id: 'chrome',   slot: 'body',   name: 'Neon Chrome',     price: 1200, level: 3, color: 0xdff3ff, metal: 1,   rough: .12, glow: 1.1, fx: 'chrome' },
-  { id: 'camo',     slot: 'body',   name: 'Active Camo',     price: 2500, level: 6, color: 0xb9d8e6, metal: .2,  rough: .1,  glow: .12, fx: 'camo' },
+  { id: 'camo',     slot: 'body',   name: 'Active Camouflage',     price: 2500, level: 6, color: 0xb9d8e6, metal: .2,  rough: .1,  glow: .12, fx: 'camo' },
   { id: 'ember',    slot: 'body',   name: 'Ember',           price: 1200, level: 5, color: 0x8a2a0a, metal: .5,  rough: .4,  glow: .6 },
   { id: 'void',     slot: 'body',   name: 'Void Glass',      price: 2000, level: 8, color: 0x2a1a55, metal: .9,  rough: .1,  glow: .55 },
   { id: 'w-issue',  slot: 'weapon', name: 'Standard finish', price: 0,    level: 1, color: 0x3a3f4d, metal: .6,  rough: .45, beam: null },
   { id: 'w-carbon', slot: 'weapon', name: 'Carbon',          price: 250,  level: 1, color: 0x15161a, metal: .7,  rough: .35, beam: null },
   { id: 'w-chrome', slot: 'weapon', name: 'Neon Chrome',     price: 700,  level: 3, color: 0xdff3ff, metal: 1,   rough: .12, beam: 0x9bf5ff },
-  { id: 'w-ember',  slot: 'weapon', name: 'Ember',           price: 1000, level: 5, color: 0x8a2a0a, metal: .5,  rough: .4,  beam: 0xff8a3a }
+  { id: 'w-ember',  slot: 'weapon', name: 'Ember',           price: 1000, level: 5, color: 0x8a2a0a, metal: .5,  rough: .4,  beam: 0xff8a3a },
+  // ---- Step 15 premium shader skins (fx 'shader': m picks the animated GLSL pattern on the client; the faction colour always layers through it) ----
+  { id: 'gold',     slot: 'body', name: 'Gold Leaf',       price: 1500, level: 4,  color: 0xf2b81f, metal: 1,  rough: .25, glow: .15, fx: 'shader', m: 1 },
+  { id: 'obsidian', slot: 'body', name: 'Obsidian Glass',  price: 2200, level: 7,  color: 0x05050a, metal: .9, rough: .04, glow: .8,  fx: 'shader', m: 2 },
+  { id: 'plasma',   slot: 'body', name: 'Plasma Fire',     price: 2600, level: 9,  color: 0xff6a10, metal: .1, rough: .6,  glow: 1.2, fx: 'shader', m: 3 },
+  { id: 'frost',    slot: 'body', name: 'Titanium Frost',  price: 1800, level: 5,  color: 0xc4d8ec, metal: .8, rough: .3,  glow: .3,  fx: 'shader', m: 4 },
+  { id: 'rust',     slot: 'body', name: 'Rusty Junkyard',  price: 700,  level: 2,  color: 0x7a4a24, metal: .3, rough: .9,  glow: .1,  fx: 'shader', m: 5 },
+  { id: 'punk',     slot: 'body', name: 'Cyber Punk',      price: 2400, level: 8,  color: 0xff2ad4, metal: .6, rough: .3,  glow: 1,   fx: 'shader', m: 6 },
+  { id: 'voidm',    slot: 'body', name: 'Void Matter',     price: 3000, level: 12, color: 0x120022, metal: .3, rough: .3,  glow: 1.3, fx: 'shader', m: 7 },
+  { id: 'digi',     slot: 'body', name: 'Digital Camo',    price: 900,  level: 3,  color: 0x5a6b45, metal: .2, rough: .8,  glow: .1,  fx: 'shader', m: 8 },
+  { id: 'matrix',   slot: 'body', name: 'Matrix Code',     price: 2800, level: 10, color: 0x00ff40, metal: .2, rough: .4,  glow: 1.1, fx: 'shader', m: 9 },
+  { id: 'solar',    slot: 'body', name: 'Solar Flare',     price: 3200, level: 13, color: 0xffb020, metal: .1, rough: .5,  glow: 1.5, fx: 'shader', m: 10 },
+  { id: 'space',    slot: 'body', name: 'Deep Space',      price: 3500, level: 15, color: 0x0a0a30, metal: .5, rough: .3,  glow: 1,   fx: 'shader', m: 11 },
+  { id: 'acid',     slot: 'body', name: 'Acid Spill',      price: 2000, level: 6,  color: 0x99ff1a, metal: .2, rough: .2,  glow: 1,   fx: 'shader', m: 12 },
+  // ---- Step 15 exoskeleton frames. hp = armour health, spd/jump = movement multipliers, blast = explosive damage resisted, quiet = silent footsteps,
+  //      dash = seconds to recharge the Q dash, melee = multiplier on the F strike ----
+  { id: 'f-raider', slot: 'frame', name: 'Vanguard Raider Frame', price: 0,    level: 1, color: 0x9aa3b5, metal: .6, rough: .4, glow: 0, fr: { hp: 100, spd: 1,   jump: 1,    blast: 0,  quiet: 0, dash: 4,   melee: 1.5 } },
+  { id: 'f-apex',   slot: 'frame', name: 'Apex Predator Frame',   price: 1500, level: 4, color: 0xff7a2a, metal: .6, rough: .4, glow: 0, fr: { hp: 70,  spd: 1.3, jump: 1.25, blast: 0,  quiet: 0, dash: 4,   melee: 1 } },
+  { id: 'f-jugg',   slot: 'frame', name: 'Juggernaut Frame',      price: 2500, level: 8, color: 0x7f8794, metal: .8, rough: .5, glow: 0, fr: { hp: 200, spd: .78, jump: .85,  blast: .6, quiet: 0, dash: 5.5, melee: 1 } },
+  { id: 'f-ghost',  slot: 'frame', name: 'Void Ghost Frame',      price: 2000, level: 6, color: 0x6a3fd0, metal: .5, rough: .3, glow: 0, fr: { hp: 100, spd: 1,   jump: 1,    blast: 0,  quiet: 1, dash: 2.2, melee: 1 } }
 ];
+const PREMIUM = ['carbon', 'chrome', 'camo', 'gold', 'obsidian', 'plasma', 'frost', 'rust', 'punk', 'voidm', 'digi', 'matrix', 'solar', 'space', 'acid'];   // the 15 premium skins bots draw from
 const skinById = new Map(SKINS.map(s => [s.id, s]));
-const newProfile = () => ({ xp: 0, coins: 0, kills: 0, owned: ['issue', 'w-issue'], eq: { body: 'issue', weapon: 'w-issue' }, rev: 0, seen: Date.now() });
+const newProfile = () => ({ xp: 0, coins: 0, kills: 0, owned: ['issue', 'w-issue', 'f-raider'], eq: { body: 'issue', weapon: 'w-issue', frame: 'f-raider' }, rev: 0, seen: Date.now() });
 
 // The "mock database": every profile in one JSON file, keyed by a secret token that the player's browser keeps.
 // Render's free plan wipes local files on every restart or sleep, so each player's browser also holds a signed backup
@@ -125,10 +150,10 @@ function adopt(token, save) {   // restore a profile from a signed backup, if th
   try {
     const d = JSON.parse(Buffer.from(body, 'base64url').toString());
     if (d.t !== token) return null;
-    const owned = [...new Set(['issue', 'w-issue', ...(Array.isArray(d.owned) ? d.owned : []).filter(id => skinById.has(id))])];
+    const owned = [...new Set(['issue', 'w-issue', 'f-raider', ...(Array.isArray(d.owned) ? d.owned : []).filter(id => skinById.has(id))])];
     const worn = (id, slot, def) => (owned.includes(id) && skinById.get(id).slot === slot ? id : def);
     const n = v => Math.max(0, Math.floor(Number(v)) || 0);
-    return { xp: n(d.xp), coins: n(d.coins != null ? d.coins : d.credits), kills: n(d.kills), owned, eq: { body: worn(d.eq && d.eq.body, 'body', 'issue'), weapon: worn(d.eq && d.eq.weapon, 'weapon', 'w-issue') }, rev: 1, seen: Date.now() };
+    return { xp: n(d.xp), coins: n(d.coins != null ? d.coins : d.credits), kills: n(d.kills), owned, eq: { body: worn(d.eq && d.eq.body, 'body', 'issue'), weapon: worn(d.eq && d.eq.weapon, 'weapon', 'w-issue'), frame: worn(d.eq && d.eq.frame, 'frame', 'f-raider') }, rev: 1, seen: Date.now() };
   } catch (e) { return null; }
 }
 
@@ -161,7 +186,7 @@ const spawnRing = (r, n, look = [0, 0]) => Array.from({ length: n }, (_, i) => {
 
 const MAPS = {
   field: {   // open ground, tall pillars, low cover and two bunkers
-    id: 'field', name: 'Pillar Fields', half: 60, sky: 0x0f1530, fog: [40, 140], sun: true, ceiling: 0, lights: [], tint: 0x8d9bc8, accent: 0x7aa2ff, stars: false,
+    id: 'field', name: 'Pillar Fields', half: 60, theme: 'meadow', sky: 0xc2e7ff, fog: [60, 260], sun: true, ceiling: 0, lights: [], tint: 0xe6edf3, accent: 0x7ec8ff, stars: false,
     ground: 0, bounds: { min: [-60, -2, -60], max: [60, 40, 60], edge: 'wall' }, killZones: [], ramps: [],
     blocks: [B(-14, -14, 1, 1, 7, 'pillar'), B(14, -14, 1, 1, 7, 'pillar'), B(-14, 14, 1, 1, 7, 'pillar'), B(14, 14, 1, 1, 7, 'pillar'),
              B(-32, -8, 1, 1, 7, 'pillar'), B(32, -8, 1, 1, 7, 'pillar'), B(-32, 8, 1, 1, 7, 'pillar'), B(32, 8, 1, 1, 7, 'pillar'),
@@ -170,9 +195,20 @@ const MAPS = {
     spawns: { ffa: spawnRing(46, 16), vanguard: spawnRow(-35, -46, 35, -46, 8), horizon: spawnRow(-35, 46, 35, 46, 8) },
     vehicles: [{ x: 0, z: 12, yaw: 0 }]
   },
+  glacier: {   // an ice island: white walls and bunkers, a central plateau reached by two ramps, and four tall ice pillars with gun nests on top
+    id: 'glacier', name: 'Glacier Run', half: 70, theme: 'ice', sky: 0xe6f6ff, fog: [70, 300], sun: true, ceiling: 0, lights: [], tint: 0xeaf4fb, accent: 0x6fd3ff, stars: false,
+    ground: 0, bounds: { min: [-70, -2, -70], max: [70, 40, 70], edge: 'wall' }, killZones: [],
+    ramps: [RAMP(10, 0, 3, 3, 0, 2, 'W'), RAMP(-10, 0, 3, 3, 0, 2, 'E')],
+    blocks: [B(0, 0, 7, 7, 2, 'platform'), B(-20, -20, 1.2, 1.2, 8, 'pillar'), B(20, -20, 1.2, 1.2, 8, 'pillar'), B(-20, 20, 1.2, 1.2, 8, 'pillar'), B(20, 20, 1.2, 1.2, 8, 'pillar'),
+             B(-30, 0, .8, 10, 3), B(30, 0, .8, 10, 3), B(0, -26, 10, .8, 3), B(0, 26, 10, .8, 3),
+             B(-46, -14, 6, 5, 5, 'building'), B(46, 14, 6, 5, 5, 'building'),
+             B(-12, -40, 2, .8, 1.2, 'crate'), B(12, -40, 2, .8, 1.2, 'crate'), B(-12, 40, 2, .8, 1.2, 'crate'), B(12, 40, 2, .8, 1.2, 'crate'), B(-8, 14, .8, 2, 1.2, 'crate'), B(8, -14, .8, 2, 1.2, 'crate')],
+    spawns: { ffa: spawnRing(56, 24), vanguard: spawnRow(-45, -60, 45, -60, 12), horizon: spawnRow(-45, 60, 45, 60, 12) },
+    vehicles: [{ x: -38, z: 0, yaw: 0 }, { x: 38, z: 0, yaw: 0, type: 'tank' }]
+  },
   arena: {   // a tight indoor arena: metal walls, doorways, a central block and a ceiling
-    id: 'arena', name: 'Close Quarters', half: 24, sky: 0x07090f, fog: [10, 55], sun: false, ceiling: 6, lights: [[0, 5, -14], [0, 5, 14]], tint: 0xc9a98a, accent: 0xff9a4d, stars: false,
-    ground: 0, bounds: { min: [-24, -2, -24], max: [24, 8, 24], edge: 'wall' }, killZones: [], ramps: [],
+    id: 'arena', name: 'Sunbaked Fort', half: 24, theme: 'desert', sky: 0xffd27f, fog: [30, 170], sun: true, ceiling: 0, lights: [], tint: 0xe3c196, accent: 0xff9a4d, stars: false,
+    ground: 0, bounds: { min: [-24, -2, -24], max: [24, 40, 24], edge: 'wall' }, killZones: [], ramps: [],
     blocks: [B(0, -24.5, 25, .5, 5), B(0, 24.5, 25, .5, 5), B(-24.5, 0, .5, 25, 5), B(24.5, 0, .5, 25, 5),
              B(-12, -10, 6, .5, 4), B(12, -10, 6, .5, 4), B(-12, 10, 6, .5, 4), B(12, 10, 6, .5, 4),
              B(0, 0, 2, 2, 3, 'pillar'), B(-16, 0, .5, 3, 2.5), B(16, 0, .5, 3, 2.5),
@@ -184,7 +220,7 @@ const MAPS = {
     vehicles: [{ x: 0, z: 16, yaw: 0 }]
   },
   station: {   // a floating space station: a deck around an open reactor shaft, raised platforms joined by ramps and skybridges, metal corridors
-    id: 'station', name: 'Orbital Station', half: 30, sky: 0x03040a, fog: [70, 280], sun: true, ceiling: 0, lights: [], tint: 0xb4bdd6, accent: 0xb48cff, stars: true, hull: { top: 44, bottom: 14, depth: 20 },
+    id: 'station', name: 'Orbital Station', half: 30, theme: 'night', sky: 0x1f2d66, fog: [70, 280], sun: true, ceiling: 0, lights: [], tint: 0xb4bdd6, accent: 0xb48cff, stars: true, hull: { top: 44, bottom: 14, depth: 20 },
     ground: null, bounds: { min: [-70, -25, -70], max: [70, 60, 70], edge: 'void' },
     killZones: [{ min: [-4, -25, -4], max: [4, -.5, 4], label: 'fell into the reactor shaft' }],
     blocks: [
@@ -231,7 +267,7 @@ function buildFrontier() {
     for (let i = 0; i < 10; i++) { const x = between(-60, 60), d = between(52, 112); if (Math.abs(x) > 14 && !(d > 90 && Math.abs(Math.abs(x) - 30) < 8) && free(x, Z(d), 1.5, 1.5)) mid(x, Z(d), 1.2, 1.2, 1.2, 'crate'); }   // loose cover in the yard
     bases.push({ team, x: 0, z: Z(60), hx: 76, hz: 56 });
     spawns[team] = [...spawnRow(-24, Z(12), 24, Z(12), 8), ...spawnRow(-24, Z(20), 24, Z(20), 8)];
-    const vy = sz < 0 ? Math.PI : 0; vehicles.push({ x: -34, z: Z(100), yaw: vy, type: 'car' }, { x: 34, z: Z(100), yaw: vy, type: 'mech' }, { x: 0, z: Z(96), yaw: vy, type: 'heli' });   // a car, a mech and a helicopter in each base
+    const vy = sz < 0 ? Math.PI : 0; vehicles.push({ x: -34, z: Z(100), yaw: vy, type: 'car' }, { x: 34, z: Z(100), yaw: vy, type: 'mech' }, { x: 0, z: Z(96), yaw: vy, type: 'heli' }, { x: 26, z: Z(92), yaw: vy, type: 'tank' });   // a car, a mech and a helicopter in each base
     for (const x of [-17, 17]) { W(x, 110, 1.4, 1.4, 2, 'building'); turrets.push({ team, x, y: 2, z: Z(110) }); }   // a sentry turret on a pedestal either side of the gate
   }
   // The middle: a stepped ziggurat at the centre, then arenas of trenches, pillar fields, tiered platforms and crate yards, then scattered cover.
@@ -266,11 +302,16 @@ function buildFrontier() {
   low.slice(0, 9).forEach((q, i) => pickups.push({ wi: i % 3, x: q.x, y: 2.8, z: q.z }));   // rifle, sniper and rocket in turn on the low platforms
   for (let t = 0; spawns.ffa.length < 20 && t < 3000; t++) { const x = rd(between(-280, 280)), z = rd(between(-165, 165)); if (free(x, z, 1, 1, 3) && spawns.ffa.every(s => Math.hypot(s.x - x, s.z - z) > 40)) spawns.ffa.push(at(x, 0, z)); }
   return {
-    id: 'frontier', name: 'Twin Citadels', half: 300, sky: 0x070b1f, fog: [170, 720], sun: true, big: true, ceiling: 0, lights: [], tint: 0x8d9bc8, accent: 0x7aa2ff, stars: false,
+    id: 'frontier', name: 'Twin Citadels', half: 300, theme: 'grass', sky: 0xc2e7ff, fog: [170, 720], sun: true, big: true, ceiling: 0, lights: [], tint: 0xdde5ec, accent: 0x7ec8ff, stars: false,
     ground: 0, bounds: { min: [-300, -2, -300], max: [300, 60, 300], edge: 'wall' }, killZones: [], blocks, ramps, bases, spawns, vehicles, pickups, turrets
   };
 }
 MAPS.frontier = buildFrontier();
+for (const m of Object.values(MAPS)) {   // manned gun nests on top of the tallest pillars of every map
+  m.vehicles = m.vehicles || [];
+  const pil = m.blocks.filter(b => b.kind === 'pillar'), top = Math.max(0, ...pil.map(b => b.h));
+  if (top >= 7) for (const b of pil) if (b.h === top) m.vehicles.push({ x: b.x, z: b.z, yaw: 0, type: 'turret', y: (b.y || 0) + b.h });
+}
 const clientMap = m => { const { spawns, ...rest } = m; return rest; };   // players never need the spawn list
 
 // Floors: the ramp's height at a point (t runs 0 at the low end to 1 at the high end), and the highest floor at x, z that is not above yMax.
@@ -312,10 +353,14 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const wrap = a => ((a + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
 const r2 = v => Math.round(v * 100) / 100, r3 = v => Math.round(v * 1000) / 1000;
 const W = p => WEAPONS[p.wi];
-const pub = p => ({ id: p.id, name: p.name, lv: lvOf(p), faction: p.faction, kills: p.kills, deaths: p.deaths, alive: p.alive, x: p.x, y: p.y, z: p.z, yaw: p.yaw, pitch: p.pitch, skin: { body: profOf(p).eq.body, weapon: profOf(p).eq.weapon } });
+// Exoskeleton frame of a player or bot. It only counts if it is owned (an unowned id in a profile falls back to the free Raider), so nobody can wear what they have not bought.
+const frameOf = p => { const pr = profOf(p), f = skinById.get(pr.eq.frame); return f && f.slot === 'frame' && pr.owned.includes(f.id) ? f.fr : skinById.get('f-raider').fr; };
+const maxHp = p => frameOf(p).hp;
+const MELEE_DMG = 40, MELEE_RANGE = 2.6;
+const pub = p => ({ id: p.id, name: p.name, lv: lvOf(p), faction: p.faction, kills: p.kills, deaths: p.deaths, alive: p.alive, x: p.x, y: p.y, z: p.z, yaw: p.yaw, pitch: p.pitch, skin: { body: profOf(p).eq.body, weapon: profOf(p).eq.weapon, frame: profOf(p).eq.frame } });
 const matchInfo = () => ({ mode: match.mode, limit: LIMIT[match.mode], state: match.state, team: match.team, map: map.name });
 const sendScores = () => emit('scores', { t: match.team, p: [...players.values()].map(p => [p.id, p.kills, p.deaths, lvOf(p)]) });
-const vehRows = () => vehicles.map(v => [v.id, r2(v.x), r2(v.z), r3(v.yaw), v.driver ? v.driver.id : 0, r2(v.y || 0)]);
+const vehRows = () => vehicles.map(v => [v.id, r2(v.x), r2(v.z), r3(v.yaw), v.driver ? v.driver.id : 0, r2(v.y || 0), v.gunner ? v.gunner.id : 0]);
 function profileView(p) {
   const pr = profOf(p), lv = levelInfo(pr.xp);
   return { xp: pr.xp, level: lv.level, into: lv.into, need: lv.need, coins: pr.coins, kills: pr.kills, owned: pr.owned, eq: pr.eq, save: sign(p.token, pr) };
@@ -332,7 +377,7 @@ function grant(p, xp, coins, why) {
 function equip(p, s) {   // wear a skin and tell everyone, so they see it too
   const pr = profOf(p); pr.eq[s.slot] = s.id; pr.rev++; store.set(p.token, pr);
   p.sock.emit('profile', profileView(p));
-  emit('skin', { id: p.id, body: pr.eq.body, weapon: pr.eq.weapon });
+  emit('skin', { id: p.id, body: pr.eq.body, weapon: pr.eq.weapon, frame: pr.eq.frame });
 }
 const emitYou = p => p.sock.emit('you', { hp: p.hp, ammos: p.ammos, reserve: p.reserve, held: [...p.held], wi: p.wi, reloading: !!p.reloadEnd });
 const profOf = p => { const s = store.get(p.token); if (s) p.prof = s; return p.prof; };   // two tabs of one browser share one profile
@@ -370,8 +415,8 @@ function pickSpawn(p) {
 
 function respawn(p) {
   const sp = pickSpawn(p);
-  Object.assign(p, { x: sp.x, y: sp.y, z: sp.z, yaw: sp.yaw, pitch: 0, hp: HP, alive: true, wi: 0, ammos: WEAPONS.map(w => w.magazineSize), reserve: WEAPONS.map(w => w.maxAmmo), held: new Set(), reloadEnd: 0, nextShot: 0, vehicle: 0, epoch: p.epoch + 1, hist: [] });
-  p.sock.emit('respawn', { x: sp.x, y: sp.y, z: sp.z, yaw: sp.yaw, hp: HP, ammos: p.ammos, reserve: p.reserve, wi: p.wi, e: p.epoch });   // e: old position updates still in flight are ignored
+  Object.assign(p, { x: sp.x, y: sp.y, z: sp.z, yaw: sp.yaw, pitch: 0, hp: maxHp(p), alive: true, wi: 0, ammos: WEAPONS.map(w => w.magazineSize), reserve: WEAPONS.map(w => w.maxAmmo), held: new Set(), reloadEnd: 0, nextShot: 0, vehicle: 0, epoch: p.epoch + 1, hist: [] });
+  p.sock.emit('respawn', { x: sp.x, y: sp.y, z: sp.z, yaw: sp.yaw, hp: p.hp, maxHp: maxHp(p), ammos: p.ammos, reserve: p.reserve, wi: p.wi, e: p.epoch });   // e: old position updates still in flight are ignored
 }
 
 function startReload(p) {
@@ -472,9 +517,10 @@ function cast(shooter, o, d, range) {
 
 function leaveVehicle(p, notify) {
   const v = vehicles.find(x => x.id === p.vehicle);
-  p.vehicle = 0;
+  p.vehicle = 0; p.seat = 0;
   if (!v) return;
-  v.driver = null; v.speed = 0; v.y = 0;   // an empty helicopter settles on the ground
+  if (v.gunner === p) v.gunner = null;   // a roof gunner steps off and the driver carries on
+  else { v.driver = null; v.speed = 0; v.y = v.sy || 0; if (v.gunner) leaveVehicle(v.gunner, true); }   // an empty helicopter settles; a gunner is put out with the driver
   if (notify) { const s = exitSpot(v); p.x = s.x; p.z = s.z; p.y = 0; p.sock.emit('undrive', { x: s.x, z: s.z }); }
   emit('vehicles', vehRows());
 }
@@ -532,6 +578,7 @@ function validateMap(m) {
     for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) if (Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y, pts[i].z - pts[j].z) < 3.5) bad.push(name + '#' + i + ' and #' + j + ' are less than 3.5 m apart');
   }
   m.vehicles.forEach((v, i) => {
+    if (v.type === 'turret') return;   // a pillar gun nest sits on top of its pillar on purpose
     if (m.blocks.some(k => groundBlock(k) && Math.abs(v.x - k.x) < k.hx + (VTYPES[v.type || 'car'].hx) && Math.abs(v.z - k.z) < k.hz + (VTYPES[v.type || 'car'].hz))) bad.push('vehicle#' + i + ' is inside a block');
     if (surfaceY(m, v.x, v.z, .1) < -.05) bad.push('vehicle#' + i + ' is not on a floor');
   });
@@ -554,7 +601,7 @@ function startMatch(mode, mapId) {
   clearTimeout(nextTimer);
   map = MAPS[mapId] || map;
   match.mode = mode; match.state = 'live'; match.team = { vanguard: 0, horizon: 0 };
-  vehicles = map.vehicles.map((d, i) => ({ id: i + 1, type: d.type || 'car', x: d.x, y: 0, z: d.z, yaw: d.yaw, speed: 0, driver: null, dirty: false, heat: 0, lockUntil: 0 }));
+  vehicles = map.vehicles.map((d, i) => ({ id: i + 1, type: d.type || 'car', x: d.x, y: d.y || 0, sy: d.y || 0, z: d.z, yaw: d.yaw, speed: 0, driver: null, gunner: null, dirty: false, heat: 0, lockUntil: 0 }));
   for (const p of players.values()) p.vehicle = 0;
   const list = [...players.values()].sort(() => Math.random() - .5), flip = Math.random() < .5 ? 1 : 0;   // random split into teams
   list.forEach((p, i) => { p.kills = p.deaths = 0; p.faction = mode === 'tdm' ? ((i + flip) % 2 ? 'horizon' : 'vanguard') : 'ffa'; });
@@ -611,13 +658,14 @@ function botName() {   // 23% silly, 77% sci-fi, never a name already in this ro
   return list.length ? randOf(list) : 'Unit_' + nextId;
 }
 function spawnBot() {
-  const id = nextId++, body = randOf(SKINS.filter(s => s.slot === 'body')).id, weapon = randOf(SKINS.filter(s => s.slot === 'weapon')).id;
+  const id = nextId++, body = randOf(PREMIUM), weapon = randOf(SKINS.filter(s => s.slot === 'weapon')).id, frame = randOf(SKINS.filter(s => s.slot === 'frame')).id;   // every bot: a random premium skin and a random exoskeleton
   const b = {
-    id, key: 'bot' + id, bot: true, sock: BOT_SOCK, token: null, prof: { xp: 0, coins: 0, kills: 0, owned: [body, weapon], eq: { body, weapon } },
+    id, key: 'bot' + id, bot: true, sock: BOT_SOCK, token: null, prof: { xp: 0, coins: 0, kills: 0, owned: [body, weapon, frame], eq: { body, weapon, frame } },
     lv: 5 + Math.floor(Math.random() * 91), shopAt: 0, name: botName(), faction: pickFaction(), x: 0, y: 0, z: 0, yaw: 0, pitch: 0, last: 0, lastVeh: 0, useAt: 0,
     hp: HP, alive: true, kills: 0, deaths: 0, ammos: WEAPONS.map(w => w.magazineSize), reserve: WEAPONS.map(w => w.maxAmmo), held: new Set(), wi: 0, vehicle: 0, reloadEnd: 0, nextShot: 0,
     respawnAt: 0, epoch: 0, rtt: 0, hist: [], nameAt: 0, vy: 0, onGround: true, strafe: 1, strafeAt: 0, stuck: 0, detourUntil: 0, detour: 0, panic: null, goal: null, goalAt: 0
   };
+  b.hp = maxHp(b);
   b.wi = randOf(WEAPONS.map((w, i) => i).filter(i => WEAPONS[i].unlockLevel <= b.lv));   // a bot only starts with a weapon its fake level has unlocked
   const sp = pickSpawn(b); Object.assign(b, { x: sp.x, y: sp.y, z: sp.z, yaw: sp.yaw });
   players.set(b.key, b); emit('join', pub(b)); sendScores();
@@ -639,6 +687,15 @@ function botBlocked(p, x, z) {
 }
 // Every tick each living bot hunts: it finds the closest living enemy (anyone, in FFA), turns toward them, runs at them and shoots with a
 // little aim error. With nobody left alive it sprints between busy spots (the spawn points and the middle) to find a fight.
+const botSkill = lv => clamp(.1 + .72 * (lv - 5) / 90 + (Math.random() - .5) * .3, .06, .88);   // 0 hopeless .. 1 perfect: follows the fake level, jittered so equal levels differ, capped so nobody is perfect
+function steer(p, mx, mz) {   // the clear heading nearest to where the bot wants to go, probing 1.5 m and 3.2 m ahead, so it slides along a wall instead of pushing into it
+  const a0 = Math.atan2(mz, mx), s = p.side || 1;
+  for (const off of [0, .45, -.45, .9, -.9, 1.4, -1.4, 2, -2]) {
+    const a = a0 + off * s, c = Math.cos(a), n = Math.sin(a);
+    if (!botBlocked(p, p.x + c * 1.5, p.z + n * 1.5) && !botBlocked(p, p.x + c * 3.2, p.z + n * 3.2)) return [c, n];
+  }
+  return [-mx, -mz];   // boxed in: back out
+}
 function botTick(now) {
   const dt = 1 / TICK_HZ;
   for (const p of players.values()) {
@@ -649,43 +706,53 @@ function botTick(now) {
       p.boardAt = now + 700; const v = vehicles.find(x => !x.driver && Math.abs((x.y || 0) - p.y) < 3 && distToVehicle(x, p.x, p.z) < 2.2);
       if (v && Math.random() < .75) { v.driver = p; p.vehicle = v.id; p.reloadEnd = 0; p.drove = now; p.stuck = 0; v.speed = 0; v.dirty = true; emit('vehicles', vehRows()); continue; }
     }
+    const skill = p.skill ?? (p.skill = botSkill(p.lv)), turnR = BOT.turn * (.4 + .7 * skill);
     let tgt = null, best = Infinity;
     for (const q of players.values()) {
       if (q === p || !q.alive || (match.mode === 'tdm' && q.faction === p.faction)) continue;
       const d = Math.hypot(q.x - p.x, q.y - p.y, q.z - p.z); if (d < best) { best = d; tgt = q; }
     }
+    if (tgt !== p.lastTgt) { p.lastTgt = tgt; p.reactAt = now + (900 - 700 * skill) + Math.random() * 400; }   // a new target takes a moment to notice: slower for weaker bots
+    if (tgt && now > (p.wsAt || 0) && !p.reloadEnd) { p.wsAt = now + 1200; const have = i => i === 0 || (p.held.has(i) && (p.ammos[i] > 0 || p.reserve[i] > 0)); const pick = best > 70 && have(1) ? 1 : best > 14 && best < 90 && have(2) && Math.random() < .5 ? 2 : 0; if (pick !== p.wi) p.wi = pick; }   // sniper at range, rockets mid range, rifle up close
     if (!tgt && (!p.goal || now > p.goalAt || Math.hypot(p.goal.x - p.x, p.goal.z - p.z) < 3)) { p.goal = Math.random() < .3 ? { x: 0, z: 0 } : randOf(map.spawns.ffa); p.goalAt = now + 8000; }
     const gx = tgt ? tgt.x : p.goal.x, gy = tgt ? tgt.y + 1.2 : p.y + BODY.eye, gz = tgt ? tgt.z : p.goal.z;
     const dx = gx - p.x, dy = gy - (p.y + BODY.eye), dz = gz - p.z, flat = Math.hypot(dx, dz) || 1, dist = Math.hypot(dx, dy, dz) || 1;   // the 3D vector to the target
     const wantYaw = Math.atan2(-dx, -dz);
-    p.yaw = r3(wrap(p.yaw + clamp(wrap(wantYaw - p.yaw), -BOT.turn, BOT.turn)));                                      // turn smoothly, never snap
+    p.yaw = r3(wrap(p.yaw + clamp(wrap(wantYaw - p.yaw), -turnR, turnR)));                                      // turn smoothly, never snap
     p.pitch = r3(clamp(p.pitch + clamp(Math.atan2(dy, flat) - p.pitch, -.12, .12), -1.2, 1.2));
-    if (p.hp >= HP * .3) p.panic = null; else if (p.panic === null) p.panic = Math.random() < .4 ? (Math.random() < .5 ? 'strafe' : 'jump') : 'none';   // below 30% health: 40% panic
-    if (now > p.strafeAt) { p.strafe = -p.strafe; p.strafeAt = now + 700 + Math.random() * 600; }
-    const fx = dx / flat, fz = dz / flat, side = p.panic === 'strafe' || (tgt && flat < 8) ? p.strafe : 0, fwd = tgt && flat < 4 ? 0 : p.panic === 'strafe' ? .35 : 1;
+    if (p.hp >= maxHp(p) * .3) p.panic = null; else if (p.panic === null) p.panic = Math.random() < .4 ? (Math.random() < .5 ? 'strafe' : 'jump') : 'none';   // below 30% health: 40% panic
+    if (now > p.strafeAt) { p.strafe = -p.strafe; p.strafeAt = now + 500 + skill * 500 + Math.random() * 700; }
+    const w0 = W(p), pref = w0.short === 'SNIPER' ? 55 : w0.short === 'ROCKET' ? 28 : 13, hurtBad = p.hp < maxHp(p) * .3 && skill > .35;   // each weapon wants a fighting distance
+    const fx = dx / flat, fz = dz / flat, side = p.panic === 'strafe' || (tgt && flat < pref * 1.7) ? p.strafe : 0;
+    const fwd = !tgt ? 1 : hurtBad ? -.7 : flat < 3 ? 0 : flat > pref ? 1 : skill > .5 && flat < pref * .5 ? -.5 : .2;   // close in, hold at range, back off if hurt or if good enough to know better
     let mx = fx * fwd - fz * side, mz = fz * fwd + fx * side;
-    if (now < p.detourUntil) { const c = Math.cos(p.detour), s = Math.sin(p.detour); [mx, mz] = [mx * c - mz * s, mx * s + mz * c]; }   // sidestep a wall we are stuck on
+    if (now < p.detourUntil) { const c = Math.cos(p.detour), s = Math.sin(p.detour); [mx, mz] = [mx * c - mz * s, mx * s + mz * c]; }   // a forced detour after being stuck
     const ml = Math.hypot(mx, mz);
+    if (now > (p.progAt || 0)) {   // no progress for 1.5 s: try the other side of the obstacle
+      if (p.progAt && ml > .01 && Math.hypot(p.x - p.px, p.z - p.pz) < 1.2 && (!tgt || flat > 6)) { p.side = -(p.side || 1); p.detour = p.side * 1.2; p.detourUntil = now + 1200; p.steerAt = 0; }
+      p.progAt = now + 1500; p.px = p.x; p.pz = p.z;
+    }
     if (ml > .01) {
-      mx /= ml; mz /= ml;
-      const nx = p.x + mx * BOT.speed * dt, nz = p.z + mz * BOT.speed * dt;
+      if (now > (p.steerAt || 0) || !p.hdg) { p.steerAt = now + 100; p.hdg = steer(p, mx / ml, mz / ml); }
+      const [hx, hz] = p.hdg, nx = p.x + hx * BOT.speed * frameOf(p).spd * dt, nz = p.z + hz * BOT.speed * frameOf(p).spd * dt;
       if (!botBlocked(p, nx, nz)) { p.x = nx; p.z = nz; p.stuck = 0; }
       else if (!botBlocked(p, nx, p.z)) { p.x = nx; p.stuck = 0; }
       else if (!botBlocked(p, p.x, nz)) { p.z = nz; p.stuck = 0; }
-      else { if (p.onGround) p.vy = BOT.jump; if (++p.stuck > 10) { p.stuck = 0; p.detour = (Math.random() < .5 ? 1 : -1) * Math.PI / 2; p.detourUntil = now + 900; } }   // blocked: hop, then go round
+      else { if (p.onGround) p.vy = BOT.jump * frameOf(p).jump; if (++p.stuck > 8) { p.side = -(p.side || 1); p.stuck = 0; p.detour = p.side * 1.3; p.detourUntil = now + 1000; p.steerAt = 0; } }   // blocked: hop, then go the other way
     }
     if (now > (p.pkAt || 0)) { p.pkAt = now + 500; takePickup(p, now, k => k.wi !== p.wi); }   // walking over a weapon: press E
-    if (p.panic === 'jump' && p.onGround && Math.random() < .08) p.vy = BOT.jump;
+    if (p.panic === 'jump' && p.onGround && Math.random() < .08) p.vy = BOT.jump * frameOf(p).jump;
     p.vy -= BOT.gravity * dt; p.y += p.vy * dt;
     const floor = surfaceY(map, p.x, p.z, p.y + BOT.step);
     if (p.vy <= 0 && p.y <= floor) { p.y = floor; p.vy = 0; p.onGround = true; } else p.onGround = false;
     p.x = r2(p.x); p.y = r2(p.y); p.z = r2(p.z);
-    if (!tgt || p.reloadEnd || now < p.nextShot || Math.abs(wrap(wantYaw - p.yaw)) > .3) continue;
+    if (!tgt || p.reloadEnd || now < p.nextShot || now < (p.reactAt || 0) || Math.abs(wrap(wantYaw - p.yaw)) > .3) continue;
     const w = W(p), o = { x: p.x, y: p.y + BODY.eye, z: p.z }, u = { x: dx / dist, y: dy / dist, z: dz / dist };
     if (dist > w.range) continue;
     if (p.ammos[p.wi] <= 0) { if (p.reserve[p.wi] <= 0 && p.wi) p.wi = 0; else startReload(p); continue; }   // out of rockets or sniper rounds: back to the rifle
     const look = cast(p, o, u, dist); if (look.who !== tgt && look.t < dist - 1) continue;   // a wall is in the way: keep running, don't waste bullets
-    const e = (.025 + dist * .0012) * (p.panic ? 1.6 : 1), d = { x: u.x + (Math.random() - .5) * 2 * e, y: u.y + (Math.random() - .5) * 2 * e, z: u.z + (Math.random() - .5) * 2 * e };
+    if (Math.random() < (1 - skill) * .25) { p.nextShot = now + 120 + Math.random() * 300; continue; }   // weaker bots hesitate and waste time
+    const e = (.025 + dist * .0012) * (1.9 - 1.5 * skill) * (p.panic ? 1.6 : 1), d = { x: u.x + (Math.random() - .5) * 2 * e, y: u.y + (Math.random() - .5) * 2 * e, z: u.z + (Math.random() - .5) * 2 * e };
     const l = Math.hypot(d.x, d.y, d.z); d.x /= l; d.y /= l; d.z /= l;                        // the random offset: bots do not have perfect aim
     p.nextShot = now + w.fireRateDelay + Math.random() * 90; p.ammos[p.wi]--;
     const hit = cast(p, o, d, w.range), t = hit.t;
@@ -725,13 +792,13 @@ function tickPickups(now) {   // map pickups come back, old drops fade away
 }
 // One shot's damage: a headshot multiplies it, and a rocket also hurts every enemy near the blast (less the further they are; never you or your team).
 function applyHit(shooter, hit, o, dir, w) {
-  if (hit.who) hurt(shooter, hit.who, Math.round(w.damage * (hit.head ? w.headshotMultiplier : 1)), hit.head);
+  if (hit.who) hurt(shooter, hit.who, Math.round(w.damage * (hit.head ? w.headshotMultiplier : 1) * (w.splash ? 1 - frameOf(hit.who).blast : 1)), hit.head);
   if (!w.splash) return;
   const x = o.x + dir.x * hit.t, y = o.y + dir.y * hit.t, z = o.z + dir.z * hit.t;
   for (const q of [...players.values()]) {
     if (q === shooter || q === hit.who || !q.alive || (match.mode === 'tdm' && q.faction === shooter.faction)) continue;
     const d = Math.hypot(q.x - x, q.y + 1 - y, q.z - z);
-    if (d < w.splash.radius) hurt(shooter, q, Math.round(w.splash.damage * (1 - .7 * d / w.splash.radius)), false);
+    if (d < w.splash.radius) hurt(shooter, q, Math.round(w.splash.damage * (1 - .7 * d / w.splash.radius) * (1 - frameOf(q).blast)), false);
   }
 }
 
@@ -745,7 +812,8 @@ function heatOk(v, w, now) {   // the mech's miniguns: heat builds with every sh
 }
 function tickVehicles(now) {   // roadkill: a fast car that touches an enemy on foot kills them outright, and the driver gets the kill
   for (const v of vehicles) {
-    const D = v.driver; if (!D || v.type !== 'car' || Math.abs(v.speed) < 7) continue;
+    if (v.gunner) { v.gunner.x = v.x; v.gunner.z = v.z; v.gunner.y = v.y || 0; }   // the roof gunner rides along
+    const D = v.driver; if (!D || (v.type !== 'car' && v.type !== 'tank') || Math.abs(v.speed) < (v.type === 'tank' ? 4 : 7)) continue;
     for (const p of [...players.values()]) {
       if (p === D || !p.alive || p.vehicle || (match.mode === 'tdm' && p.faction === D.faction)) continue;
       if (distToVehicle(v, p.x, p.z) < BODY.r && p.y < vd(v).h && p.y + BODY.h > (v.y || 0)) hurt(D, p, 9999, false, 'splat');
@@ -789,7 +857,7 @@ function botDrive(p, now, dt) {
   if (!tgt || now - p.drove > 45000 || p.stuck > 40) { leaveVehicle(p, true); p.stuck = 0; p.boardAt = now + 8000; return; }   // nobody left to hunt, or stuck: get out
   const dx = tgt.x - v.x, dz = tgt.z - v.z, flat = Math.hypot(dx, dz) || 1, want = Math.atan2(-dx, -dz), T = vd(v), w = VWEAPONS[v.type];
   v.yaw = r3(wrap(v.yaw + clamp(wrap(want - v.yaw), -.08, .08)));
-  const sp = v.type === 'car' ? 18 : v.type === 'heli' ? (flat < 70 ? 0 : 14) : (flat < 40 ? 0 : 4.2);
+  const sp = v.type === 'car' ? 18 : v.type === 'tank' ? (flat < 30 ? 0 : 7.5) : v.type === 'heli' ? (flat < 70 ? 0 : 14) : (flat < 40 ? 0 : 4.2);
   const nx = v.x - Math.sin(v.yaw) * sp * dt, nz = v.z - Math.cos(v.yaw) * sp * dt;
   if (v.type === 'heli' || !vehBlocked(v, nx, nz)) { v.x = nx; v.z = nz; p.stuck = 0; } else { v.yaw = r3(wrap(v.yaw + .5)); p.stuck++; }   // blocked: swing away
   if (v.type === 'heli') v.y = Math.min(22, (v.y || 0) + 6 * dt);
@@ -797,7 +865,7 @@ function botDrive(p, now, dt) {
   p.x = v.x; p.y = v.y || 0; p.z = v.z; p.yaw = v.yaw;
   if (!w || flat > w.range * .9 || Math.abs(wrap(want - v.yaw)) > .25 || now < p.nextShot || (v.type === 'heli' && v.y < 15)) return;
   const side = v.type === 'mech' ? (now / 45 & 1 ? 1 : -1) * 1.1 : 0, c = Math.cos(v.yaw), s = Math.sin(v.yaw);
-  const o = { x: v.x - s * 2.2 + c * side, y: (v.y || 0) + (v.type === 'mech' ? 4.2 : 1.2), z: v.z - c * 2.2 - s * side }, dy = tgt.y + 1.2 - o.y, dist = Math.hypot(dx, dy, dz) || 1;
+  const o = { x: v.x - s * 2.2 + c * side, y: (v.y || 0) + (v.type === 'mech' ? 4.2 : v.type === 'tank' ? 2 : 1.2), z: v.z - c * 2.2 - s * side }, dy = tgt.y + 1.2 - o.y, dist = Math.hypot(dx, dy, dz) || 1;
   if (!heatOk(v, w, now)) return;
   const e = .03 + dist * .0012, d = { x: dx / dist + (Math.random() - .5) * 2 * e, y: dy / dist + (Math.random() - .5) * 2 * e, z: dz / dist + (Math.random() - .5) * 2 * e }, l = Math.hypot(d.x, d.y, d.z);
   d.x /= l; d.y /= l; d.z /= l; p.nextShot = now + w.fireRateDelay + Math.random() * 40;
@@ -850,7 +918,7 @@ function connect(socket, room) {
     hp: HP, alive: true, kills: 0, deaths: 0, ammos: WEAPONS.map(w => w.magazineSize), reserve: WEAPONS.map(w => w.maxAmmo), held: new Set(), wi: 0, vehicle: 0, reloadEnd: 0, nextShot: 0, respawnAt: 0, epoch: 0, rtt: 100, hist: [], nameAt: 0
   };
   const sp = pickSpawn(me); Object.assign(me, { x: sp.x, y: sp.y, z: sp.z, yaw: sp.yaw });   // a safe point from the spawn matrix
-  players.set(socket.id, me);
+  players.set(socket.id, me); me.hp = maxHp(me);
   const on = (ev, fn) => socket.on(ev, (...a) => inRoom(room, () => fn(...a)));   // every event runs inside this player's room
   socket.emit('welcome', {
     ...pub(me), room: room.id, hp: me.hp, ammos: me.ammos, reserve: me.reserve, wi: me.wi, pickups: pickupRows(), weapons: WEAPONS, map: clientMap(map), vehicles: vehRows(), token, profile: profileView(me), skins: SKINS,
@@ -870,7 +938,7 @@ function connect(socket, room) {
   });
 
   on('shoot', d => {
-    const now = Date.now(), veh = me.vehicle ? vehicles.find(x => x.id === me.vehicle) : null, w = veh ? VWEAPONS[veh.type] : W(me);
+    const now = Date.now(), veh = me.vehicle ? vehicles.find(x => x.id === me.vehicle) : null, w = veh ? VWEAPONS[me.seat ? 'cargun' : veh.type] : W(me);
     if (!w || !d || !me.alive || match.state !== 'live' || (!veh && me.reloadEnd) || now < me.nextShot) return;   // a car has no gun; fire rate and reload are enforced here   // fire rate, reload and driving are enforced here
     if (!['ox', 'oy', 'oz', 'dx', 'dy', 'dz'].every(k => typeof d[k] === 'number' && Number.isFinite(d[k]))) return;
     const len = Math.hypot(d.dx, d.dy, d.dz);
@@ -903,23 +971,39 @@ function connect(socket, room) {
     me.useAt = now;
     if (me.vehicle) { leaveVehicle(me, true); return; }
     if (takePickup(me, now)) return;   // a weapon within reach comes before a vehicle
-    let best = null, bd = VEH.useRange;
-    for (const v of vehicles) { if (v.driver || Math.abs((v.y || 0) - me.y) > 3) continue; const d = distToVehicle(v, me.x, me.z); if (d <= bd) { best = v; bd = d; } }
+    let best = null, bd = VEH.useRange, gun = false;
+    for (const v of vehicles) {   // a free seat, a pillar gun, or the roof gun of a friendly car that already has a driver
+      const open = !v.driver, roof = v.type === 'car' && v.driver && !v.gunner && (match.mode !== 'tdm' || v.driver.faction === me.faction);
+      if (!(open || roof) || (v.type !== 'turret' && Math.abs((v.y || 0) - me.y) > 3)) continue;
+      const d = distToVehicle(v, me.x, me.z); if (d <= bd) { best = v; bd = d; gun = !open; }
+    }
     if (!best) return;
-    best.driver = me; me.vehicle = best.id; me.reloadEnd = 0;
-    socket.emit('drive', { vid: best.id, x: best.x, z: best.z, yaw: best.yaw });
+    if (gun) { best.gunner = me; me.seat = 'g'; } else best.driver = me;
+    me.vehicle = best.id; me.reloadEnd = 0;
+    if (best.type === 'turret') { me.x = best.x; me.z = best.z; me.y = best.sy; }
+    socket.emit('drive', { vid: best.id, x: best.x, z: best.z, yaw: best.yaw, g: gun ? 1 : 0 });
     emit('vehicles', vehRows());
   });
 
   on('veh', d => {                         // the driver reports the vehicle's pose
     const v = me.vehicle && vehicles.find(x => x.id === me.vehicle), now = Date.now();
-    if (!v || !d || !me.alive || now - me.lastVeh < 15) return;
+    if (!v || !d || !me.alive || me.seat || now - me.lastVeh < 15) return;
     if (![d.x, d.z, d.yaw, d.speed].every(n => typeof n === 'number' && Number.isFinite(n))) return;
     me.lastVeh = now;
+    if (v.type === 'turret') { v.yaw = r3(wrap(d.yaw)); me.x = v.x; me.z = v.z; me.y = v.sy; v.dirty = true; return; }   // a pillar gun only turns
     const T = vd(v), lim = map.half - T.hx;
     v.x = r2(clamp(d.x, -lim, lim)); v.z = r2(clamp(d.z, -lim, lim)); v.yaw = r3(wrap(d.yaw)); v.speed = r2(clamp(d.speed, -T.maxReverse, T.maxSpeed));
     v.y = v.type === 'heli' && Number.isFinite(d.y) ? r2(clamp(d.y, 0, map.bounds.max[1] - 4)) : 0;   // only helicopters leave the ground
     me.x = v.x; me.z = v.z; me.y = v.y; v.dirty = true;
+  });
+
+  on('melee', d => {   // F: a strike at arm's length. The Raider frame hits hardest. The server uses its own idea of where the eye is.
+    const now = Date.now();
+    if (!d || !me.alive || me.vehicle || match.state !== 'live' || now < (me.meleeAt || 0)) return;
+    if (![d.dx, d.dy, d.dz].every(n => typeof n === 'number' && Number.isFinite(n))) return;
+    const len = Math.hypot(d.dx, d.dy, d.dz); if (len < .5) return; me.meleeAt = now + 650;
+    const hit = cast(me, { x: me.x, y: me.y + BODY.eye, z: me.z }, { x: d.dx / len, y: d.dy / len, z: d.dz / len }, MELEE_RANGE);
+    if (hit.who && !(match.mode === 'tdm' && hit.who.faction === me.faction)) hurt(me, hit.who, Math.round(MELEE_DMG * frameOf(me).melee), !!hit.head, 'melee');
   });
 
   on('buy', id => {                        // spend coins on a skin; buying also equips it
