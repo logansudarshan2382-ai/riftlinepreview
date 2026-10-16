@@ -47,7 +47,8 @@ const MODE = ['tdm', 'ffa'].includes(process.env.MODE) ? process.env.MODE : 'rot
 const TICK_HZ = 20, MAX_PLAYERS = 16;
 const REGION = (process.env.REGION || 'US').toUpperCase().replace(/[^A-Z]/g, '').slice(0, 4) || 'US', MAX_ROOMS = Number(process.env.MAX_ROOMS) || 50, ROOM_IDLE_MS = 60000;   // REGION names the rooms (Server-EU-2); MAX_ROOMS caps one process
 const HP = 100, RESPAWN_MS = 3000, INTERMISSION_MS = 8000, SWITCH_MS = 350;
-const LIMIT = { tdm: Number(process.env.TDM_LIMIT) || 20, ffa: Number(process.env.FFA_LIMIT) || 10 };   // kills needed to win
+const LIMIT = { tdm: Number(process.env.TDM_LIMIT) || 100, ffa: Number(process.env.FFA_LIMIT) || 50 };   // kills needed to win (high, so the clock normally ends the match)
+const MATCH_MS = (Number(process.env.MATCH_MINUTES) || 10) * 60000;   // every match lasts 10 minutes
 const BODY = { r: .4, h: 1.8, eye: 1.62 };
 const VEH = { hx: 1.3, hz: 2.5, h: 1.6, maxSpeed: 22, maxReverse: 6, useRange: 1.8 };
 const VTYPES = {   // vehicle classes: footprint, height and speed limits (m/s). A ground car is fast and runs people over; the helicopter flies; the mech walks.
@@ -108,7 +109,7 @@ const SKINS = [
 ];
 const PREMIUM = ['carbon', 'chrome', 'camo', 'gold', 'obsidian', 'plasma', 'frost', 'rust', 'punk', 'voidm', 'digi', 'matrix', 'solar', 'space', 'acid'];   // the 15 premium skins bots draw from
 const skinById = new Map(SKINS.map(s => [s.id, s]));
-const newProfile = () => ({ xp: 0, coins: 0, kills: 0, owned: ['issue', 'w-issue', 'f-raider'], eq: { body: 'issue', weapon: 'w-issue', frame: 'f-raider' }, rev: 0, seen: Date.now() });
+const newProfile = () => ({ xp: 0, coins: 0, kills: 0, owned: ['issue', 'w-issue', 'f-raider'], eq: { body: 'issue', weapon: 'w-issue', frame: 'f-raider', loadout: [0, 1, 2] }, rev: 0, seen: Date.now() });
 
 // The "mock database": every profile in one JSON file, keyed by a secret token that the player's browser keeps.
 // Render's free plan wipes local files on every restart or sleep, so each player's browser also holds a signed backup
@@ -153,17 +154,96 @@ function adopt(token, save) {   // restore a profile from a signed backup, if th
     const owned = [...new Set(['issue', 'w-issue', 'f-raider', ...(Array.isArray(d.owned) ? d.owned : []).filter(id => skinById.has(id))])];
     const worn = (id, slot, def) => (owned.includes(id) && skinById.get(id).slot === slot ? id : def);
     const n = v => Math.max(0, Math.floor(Number(v)) || 0);
-    return { xp: n(d.xp), coins: n(d.coins != null ? d.coins : d.credits), kills: n(d.kills), owned, eq: { body: worn(d.eq && d.eq.body, 'body', 'issue'), weapon: worn(d.eq && d.eq.weapon, 'weapon', 'w-issue'), frame: worn(d.eq && d.eq.frame, 'frame', 'f-raider') }, rev: 1, seen: Date.now() };
+    return { xp: n(d.xp), coins: n(d.coins != null ? d.coins : d.credits), kills: n(d.kills), owned, eq: { body: worn(d.eq && d.eq.body, 'body', 'issue'), weapon: worn(d.eq && d.eq.weapon, 'weapon', 'w-issue'), frame: worn(d.eq && d.eq.frame, 'frame', 'f-raider'), loadout: cleanLoadout(d.eq && d.eq.loadout) }, rev: 1, seen: Date.now() };
   } catch (e) { return null; }
 }
 
 // ---- weapons: the first one is what everybody spawns with. Add a line here and it appears in the game. ----
-const WEAPONS = [   // damage per bullet, delay between shots (ms), magazine size, spare ammo (maxAmmo), reload seconds, range in metres, level needed. HP is 100.
+const BASE_WEAPONS = [   // damage per bullet, delay between shots (ms), magazine size, spare ammo (maxAmmo), reload seconds, range in metres, level needed. HP is 100.
   // Per player, currentMagazine is p.ammos[i] and currentAmmo (the spare rounds) is p.reserve[i]. `splash` = explosion radius (m) and damage at its centre.
   { name: 'Assault rifle',   short: 'RIFLE',  damage: 7,   headshotMultiplier: 1.5, fireRateDelay: 70,   magazineSize: 250, maxAmmo: 750, reloadTime: 1.4, range: 60,  unlockLevel: 1,  auto: true,  len: 1 },
   { name: 'Sniper rifle',    short: 'SNIPER', damage: 50,  headshotMultiplier: 2,   fireRateDelay: 450,  magazineSize: 5,   maxAmmo: 20,  reloadTime: 4.5, range: 400, unlockLevel: 5,  auto: false, len: 1.5 },
   { name: 'Rocket launcher', short: 'ROCKET', damage: 100, headshotMultiplier: 1,   fireRateDelay: 1800, magazineSize: 1,   maxAmmo: 6,   reloadTime: 5,   range: 250, unlockLevel: 10, auto: false, len: 1.4, splash: { radius: 7, damage: 90 } }
 ];
+
+// ---- the armoury: the three originals above plus 50 more. Extra properties: pellets (rays per shot), spread (inaccuracy), falloff [full-damage range, zero range, minimum multiplier], pierce (extra targets a shot passes through),
+//      splash {radius, damage}, burn {dps, secs}, lifesteal (share of damage healed), zoom (scope field of view), moveMult (walking speed while held), ammoPerShot. Players carry three (keys 1-3), picked in the shop's Loadout tab.
+const LEN = { Pistol: .6, SMG: .75, Rifle: 1, Shotgun: 1, LMG: 1.2, Marksman: 1.5, Launcher: 1.4, Energy: 1 };
+const ROWS = [   // name, short, class, unlock level, damage, delay ms, magazine, reserve, reload s, range m, extras
+  ['Pistol', 'PISTOL', 'Pistol', 1, 14, 220, 15, 90, 1, 45, { headshotMultiplier: 1.8 }],
+  ['Machine pistol', 'MPISTOL', 'Pistol', 3, 5, 55, 30, 180, 1.3, 35, { auto: true, spread: .03 }],
+  ['Revolver', 'REVOLVER', 'Pistol', 6, 38, 600, 6, 36, 2.2, 55, { headshotMultiplier: 2 }],
+  ['Plasma pistol', 'PLASMAP', 'Pistol', 11, 20, 300, 12, 72, 1.5, 50, { splash: { radius: 2, damage: 14 } }],
+  ['Hand cannon', 'HCANNON', 'Pistol', 14, 55, 900, 5, 25, 2.5, 60, { headshotMultiplier: 1.7 }],
+  ['Gauss pistol', 'GAUSSP', 'Pistol', 25, 45, 700, 8, 40, 2, 70, { pierce: 1 }],
+  ['SMG', 'SMG', 'SMG', 2, 6, 60, 32, 192, 1.4, 40, { auto: true, spread: .02 }],
+  ['Mini SMG', 'MINI', 'SMG', 4, 4, 40, 40, 240, 1.2, 30, { auto: true, spread: .04, moveMult: 1.1 }],
+  ['Vector', 'VECTOR', 'SMG', 8, 5, 45, 25, 150, 1.6, 35, { auto: true, spread: .03 }],
+  ['Compact PDW', 'PDW', 'SMG', 12, 7, 75, 30, 150, 1.5, 45, { auto: true, spread: .015 }],
+  ['Heavy SMG', 'HSMG', 'SMG', 18, 9, 85, 30, 150, 1.8, 42, { auto: true, spread: .02 }],
+  ['Vampire SMG', 'VAMP', 'SMG', 24, 6, 65, 30, 150, 1.6, 38, { auto: true, spread: .02, lifesteal: .25 }],
+  ['Carbine', 'CARBINE', 'Rifle', 3, 6, 60, 30, 150, 1.4, 55, { auto: true, spread: .012 }],
+  ['Battle rifle', 'BATTLE', 'Rifle', 9, 11, 110, 24, 120, 1.7, 70, { auto: true }],
+  ['Burst rifle', 'BURST', 'Rifle', 13, 8, 300, 36, 180, 1.8, 70, { pellets: 3, ammoPerShot: 3, spread: .012 }],
+  ['Heavy rifle', 'HEAVYR', 'Rifle', 16, 12, 120, 20, 100, 2, 75, { auto: true, headshotMultiplier: 1.7 }],
+  ['Scout rifle', 'SCOUT', 'Rifle', 20, 8, 80, 25, 125, 1.5, 85, { auto: true, zoom: 55 }],
+  ['Tactical rifle', 'TACTICAL', 'Rifle', 26, 9, 90, 30, 150, 1.6, 70, { auto: true, spread: .008 }],
+  ['Plasma rifle', 'PLASMAR', 'Rifle', 30, 8, 75, 40, 200, 2, 65, { auto: true, splash: { radius: 1.5, damage: 6 } }],
+  ['Pump shotgun', 'PUMP', 'Shotgun', 7, 9, 800, 6, 36, 2.8, 25, { pellets: 8, spread: .075, falloff: [6, 25, .15] }],
+  ['Sawed-off', 'SAWED', 'Shotgun', 15, 8, 600, 2, 24, 2.2, 18, { pellets: 10, spread: .12, falloff: [4, 18, .1] }],
+  ['Slug gun', 'SLUG', 'Shotgun', 17, 60, 1000, 5, 30, 3, 70, { headshotMultiplier: 1.5 }],
+  ['Combat shotgun', 'COMBAT', 'Shotgun', 21, 6, 380, 8, 48, 3, 28, { auto: true, pellets: 6, spread: .07, falloff: [6, 28, .15] }],
+  ['Flak cannon', 'FLAK', 'Shotgun', 28, 7, 1100, 4, 24, 3.2, 40, { pellets: 6, spread: .06, splash: { radius: 3, damage: 25 } }],
+  ['Scatter blaster', 'SCATTER', 'Shotgun', 33, 5, 700, 6, 36, 2.6, 22, { pellets: 14, spread: .15, falloff: [3, 22, .08] }],
+  ['Light machine gun', 'LMG', 'LMG', 12, 8, 85, 100, 400, 4, 70, { auto: true, spread: .02, moveMult: .9 }],
+  ['Squad gun', 'SQUAD', 'LMG', 19, 10, 100, 60, 240, 4.2, 75, { auto: true, spread: .015, moveMult: .9 }],
+  ['Minigun', 'MINIGUN', 'LMG', 25, 5, 40, 200, 600, 6, 55, { auto: true, spread: .045, moveMult: .75 }],
+  ['Heavy machine gun', 'HMG', 'LMG', 31, 13, 120, 50, 200, 4.5, 80, { auto: true, moveMult: .8 }],
+  ['Marksman rifle', 'MARKSMAN', 'Marksman', 8, 28, 400, 10, 50, 2.6, 130, { zoom: 40, headshotMultiplier: 2 }],
+  ['DMR', 'DMR', 'Marksman', 13, 22, 250, 15, 75, 2.4, 110, { zoom: 45, headshotMultiplier: 1.8 }],
+  ['Bolt sniper', 'BOLT', 'Marksman', 16, 90, 1200, 4, 20, 4, 450, { zoom: 14, headshotMultiplier: 2 }],
+  ['Ghost sniper', 'GHOST', 'Marksman', 22, 55, 650, 6, 30, 3.2, 350, { zoom: 18, headshotMultiplier: 2 }],
+  ['Anti-materiel rifle', 'AMR', 'Marksman', 36, 120, 1800, 3, 12, 5, 500, { zoom: 12, pierce: 2, moveMult: .85, headshotMultiplier: 1.8 }],
+  ['Rail rifle', 'RAIL', 'Marksman', 40, 70, 1000, 6, 24, 3.5, 400, { zoom: 16, pierce: 3 }],
+  ['Grenade launcher', 'GRENADE', 'Launcher', 14, 45, 1200, 6, 24, 3.2, 120, { splash: { radius: 5, damage: 80 }, headshotMultiplier: 1 }],
+  ['Mini-rocket pod', 'PODS', 'Launcher', 23, 20, 350, 8, 32, 3.5, 150, { splash: { radius: 3, damage: 40 }, headshotMultiplier: 1 }],
+  ['Napalm launcher', 'NAPALM', 'Launcher', 29, 30, 1600, 3, 12, 4, 110, { splash: { radius: 6, damage: 40 }, burn: { dps: 10, secs: 4 }, headshotMultiplier: 1 }],
+  ['Mortar', 'MORTAR', 'Launcher', 34, 60, 2500, 1, 8, 5, 200, { splash: { radius: 9, damage: 100 }, headshotMultiplier: 1, moveMult: .9 }],
+  ['Cluster launcher', 'CLUSTER', 'Launcher', 41, 40, 2000, 2, 10, 4, 160, { pellets: 3, spread: .06, splash: { radius: 6, damage: 60 }, headshotMultiplier: 1 }],
+  ['Nova cannon', 'NOVA', 'Launcher', 48, 110, 3000, 1, 4, 6, 250, { splash: { radius: 12, damage: 110 }, headshotMultiplier: 1, moveMult: .85 }],
+  ['Laser rifle', 'LASER', 'Energy', 10, 5, 30, 100, 300, 2.5, 60, { auto: true }],
+  ['Flamethrower', 'FLAME', 'Energy', 20, 4, 50, 150, 450, 3, 14, { auto: true, spread: .08, falloff: [4, 14, .3], burn: { dps: 8, secs: 3 }, moveMult: .95 }],
+  ['Arc caster', 'ARC', 'Energy', 27, 14, 100, 30, 120, 2, 40, { auto: true, spread: .03, burn: { dps: 4, secs: 2 } }],
+  ['Toxin sprayer', 'TOXIN', 'Energy', 29, 2, 60, 100, 300, 3, 16, { auto: true, spread: .06, burn: { dps: 6, secs: 5 } }],
+  ['Inferno gun', 'INFERNO', 'Energy', 32, 6, 45, 120, 360, 3, 18, { auto: true, spread: .07, falloff: [5, 18, .3], burn: { dps: 12, secs: 3 } }],
+  ['Thunder cannon', 'THUNDER', 'Energy', 35, 14, 900, 5, 25, 3, 45, { pellets: 5, spread: .08, splash: { radius: 2, damage: 12 } }],
+  ['Void blaster', 'VOID', 'Energy', 38, 12, 150, 20, 100, 2, 60, { auto: true, lifesteal: .4 }],
+  ['Death ray', 'DEATHRAY', 'Energy', 45, 3, 20, 300, 900, 5, 50, { auto: true, moveMult: .85 }],
+  ['Singularity gun', 'SINGULAR', 'Energy', 50, 90, 2500, 1, 5, 5, 200, { splash: { radius: 14, damage: 130 }, headshotMultiplier: 1 }]
+];
+const WEAPONS = (() => {
+  const list = BASE_WEAPONS.map((w, i) => ({ ...w, cls: ['Rifle', 'Marksman', 'Launcher'][i], ...(i === 1 ? { zoom: 18 } : {}) }));
+  for (const [name, short, cls, lv, dmg, rate, mag, max, rel, rng, o] of ROWS) list.push({ name, short, cls, damage: dmg, headshotMultiplier: 1.5, fireRateDelay: rate, magazineSize: mag, maxAmmo: max, reloadTime: rel, range: rng, unlockLevel: lv, auto: false, len: LEN[cls], ...o });
+  return list;
+})();
+const POWER = WEAPONS.map((w, i) => i).filter(i => ['Marksman', 'Launcher', 'Energy', 'LMG', 'Shotgun'].includes(WEAPONS[i].cls));   // what the map's weapon pickups hand out: a different power weapon every match
+const cleanLoadout = a => Array.isArray(a) && a.length === 3 && a.every(i => Number.isInteger(i) && i >= 0 && i < WEAPONS.length) ? a : [0, 1, 2];
+const loadoutOf = p => p.bot ? p.loadout : cleanLoadout(profOf(p).eq.loadout).map(i => lvOf(p) >= WEAPONS[i].unlockLevel ? i : 0);   // the three weapons on keys 1-3
+function botLoadout(lv) {   // one weapon for the middle, one for close in, one for long range, from what its fake level has unlocked
+  const pool = cls => { const a = WEAPONS.map((w, i) => i).filter(i => cls.includes(WEAPONS[i].cls) && WEAPONS[i].unlockLevel <= lv); return a.length ? randOf(a) : 0; };
+  return [pool(['Rifle', 'LMG', 'Energy']), pool(['Pistol', 'SMG', 'Shotgun']), pool(['Marksman', 'Launcher'])];
+}
+const spreadDir = (d, s) => { const x = d.x + (Math.random() - .5) * 2 * s, y = d.y + (Math.random() - .5) * 2 * s, z = d.z + (Math.random() - .5) * 2 * s, l = Math.hypot(x, y, z); return { x: x / l, y: y / l, z: z / l }; };
+const falloffMul = (w, d) => { const [a, b, m] = w.falloff; return d <= a ? 1 : d >= b ? m : 1 - (1 - m) * (d - a) / (b - a); };   // shotguns and flamers lose power with range
+function rayShot(me, o, dir, w) {   // one ray of a shot: damage, piercing through targets, and the distance travelled (for the tracer)
+  let oo = o, t = 0, left = w.range;
+  for (let hop = 0; hop <= (w.pierce || 0); hop++) {
+    const hit = cast(me, oo, dir, left); t += hit.t; applyHit(me, hit, oo, dir, w, t);
+    if (!hit.who) break;
+    oo = { x: oo.x + dir.x * (hit.t + .8), y: oo.y + dir.y * (hit.t + .8), z: oo.z + dir.z * (hit.t + .8) }; t += .8; left -= hit.t + .8; if (left <= 0) break;
+  }
+  return t;
+}
 
 // ---- maps ----
 // A map is plain data. The server sends it to every player and each browser builds the scene from it.
@@ -358,7 +438,7 @@ const frameOf = p => { const pr = profOf(p), f = skinById.get(pr.eq.frame); retu
 const maxHp = p => frameOf(p).hp;
 const MELEE_DMG = 40, MELEE_RANGE = 2.6;
 const pub = p => ({ id: p.id, name: p.name, lv: lvOf(p), faction: p.faction, kills: p.kills, deaths: p.deaths, alive: p.alive, x: p.x, y: p.y, z: p.z, yaw: p.yaw, pitch: p.pitch, skin: { body: profOf(p).eq.body, weapon: profOf(p).eq.weapon, frame: profOf(p).eq.frame } });
-const matchInfo = () => ({ mode: match.mode, limit: LIMIT[match.mode], state: match.state, team: match.team, map: map.name });
+const matchInfo = () => ({ mode: match.mode, limit: LIMIT[match.mode], state: match.state, team: match.team, map: map.name, left: match.state === 'live' && match.endsAt ? Math.max(0, match.endsAt - Date.now()) : 0 });
 const sendScores = () => emit('scores', { t: match.team, p: [...players.values()].map(p => [p.id, p.kills, p.deaths, lvOf(p)]) });
 const vehRows = () => vehicles.map(v => [v.id, r2(v.x), r2(v.z), r3(v.yaw), v.driver ? v.driver.id : 0, r2(v.y || 0), v.gunner ? v.gunner.id : 0]);
 function profileView(p) {
@@ -414,8 +494,8 @@ function pickSpawn(p) {
 }
 
 function respawn(p) {
-  const sp = pickSpawn(p);
-  Object.assign(p, { x: sp.x, y: sp.y, z: sp.z, yaw: sp.yaw, pitch: 0, hp: maxHp(p), alive: true, wi: 0, ammos: WEAPONS.map(w => w.magazineSize), reserve: WEAPONS.map(w => w.maxAmmo), held: new Set(), reloadEnd: 0, nextShot: 0, vehicle: 0, epoch: p.epoch + 1, hist: [] });
+  const sp = pickSpawn(p), loadout = loadoutOf(p);
+  Object.assign(p, { x: sp.x, y: sp.y, z: sp.z, yaw: sp.yaw, pitch: 0, hp: maxHp(p), alive: true, loadout, wi: loadout[0], burnUntil: 0, ammos: WEAPONS.map(w => w.magazineSize), reserve: WEAPONS.map(w => w.maxAmmo), held: new Set(), reloadEnd: 0, nextShot: 0, vehicle: 0, epoch: p.epoch + 1, hist: [] });
   p.sock.emit('respawn', { x: sp.x, y: sp.y, z: sp.z, yaw: sp.yaw, hp: p.hp, maxHp: maxHp(p), ammos: p.ammos, reserve: p.reserve, wi: p.wi, e: p.epoch });   // e: old position updates still in flight are ignored
 }
 
@@ -597,16 +677,26 @@ function endMatch(winner, wf, winners) {
   { const room = cur; nextTimer = setTimeout(() => inRoom(room, () => startMatch(next, nextMap)), INTERMISSION_MS); }   // the timer fires outside any room, so re-enter this one
 }
 
+function timeUp() {   // the clock ran out: the higher team (or the top killer) wins; level scores are a draw
+  if (match.mode === 'tdm') {
+    const a = match.team.vanguard, b = match.team.horizon;
+    if (a === b) endMatch('TIME UP: DRAW', 'ffa', []);
+    else { const f = a > b ? 'vanguard' : 'horizon'; endMatch('TIME UP: ' + f.toUpperCase() + ' WINS', f, [...players.values()].filter(p => p.faction === f)); }
+  } else {
+    const top = [...players.values()].sort((x, y) => y.kills - x.kills)[0];
+    if (!top || top.kills === 0) endMatch('TIME UP: DRAW', 'ffa', []); else endMatch('TIME UP: ' + top.name + ' WINS', 'ffa', [top]);
+  }
+}
 function startMatch(mode, mapId) {
   clearTimeout(nextTimer);
   map = MAPS[mapId] || map;
-  match.mode = mode; match.state = 'live'; match.team = { vanguard: 0, horizon: 0 };
+  match.mode = mode; match.state = 'live'; match.team = { vanguard: 0, horizon: 0 }; match.endsAt = Date.now() + MATCH_MS;
   vehicles = map.vehicles.map((d, i) => ({ id: i + 1, type: d.type || 'car', x: d.x, y: d.y || 0, sy: d.y || 0, z: d.z, yaw: d.yaw, speed: 0, driver: null, gunner: null, dirty: false, heat: 0, lockUntil: 0 }));
   for (const p of players.values()) p.vehicle = 0;
   const list = [...players.values()].sort(() => Math.random() - .5), flip = Math.random() < .5 ? 1 : 0;   // random split into teams
   list.forEach((p, i) => { p.kills = p.deaths = 0; p.faction = mode === 'tdm' ? ((i + flip) % 2 ? 'horizon' : 'vanguard') : 'ffa'; });
   emit('map', clientMap(map));
-  pickups = (map.pickups || []).map((d, i) => ({ id: 'm' + i, wi: d.wi, x: d.x, y: d.y, z: d.z, up: true, back: 0, drop: false })); emit('pk', pickupRows()); makeTurrets();
+  pickups = (map.pickups || []).map((d, i) => ({ id: 'm' + i, wi: randOf(POWER), x: d.x, y: d.y, z: d.z, up: true, back: 0, drop: false })); emit('pk', pickupRows()); makeTurrets();
   emit('vehicles', vehRows());
   emit('match', matchInfo());
   emit('factions', list.map(p => [p.id, p.faction]));
@@ -666,7 +756,7 @@ function spawnBot() {
     respawnAt: 0, epoch: 0, rtt: 0, hist: [], nameAt: 0, vy: 0, onGround: true, strafe: 1, strafeAt: 0, stuck: 0, detourUntil: 0, detour: 0, panic: null, goal: null, goalAt: 0
   };
   b.hp = maxHp(b);
-  b.wi = randOf(WEAPONS.map((w, i) => i).filter(i => WEAPONS[i].unlockLevel <= b.lv));   // a bot only starts with a weapon its fake level has unlocked
+  b.loadout = botLoadout(b.lv); b.wi = b.loadout[0];   // a bot only starts with a weapon its fake level has unlocked
   const sp = pickSpawn(b); Object.assign(b, { x: sp.x, y: sp.y, z: sp.z, yaw: sp.yaw });
   players.set(b.key, b); emit('join', pub(b)); sendScores();
 }
@@ -687,6 +777,98 @@ function botBlocked(p, x, z) {
 }
 // Every tick each living bot hunts: it finds the closest living enemy (anyone, in FFA), turns toward them, runs at them and shoots with a
 // little aim error. With nobody left alive it sprints between busy spots (the spawn points and the middle) to find a fight.
+// ---- bot navigation: each map is memorised once as a grid of cells a bot (or, when wide, a vehicle) can stand in, and routes across it are found with A* ----
+const NAV = new Map(), DI = [1, -1, 0, 0, 1, 1, -1, -1], DJ = [0, 0, 1, -1, 1, -1, 1, -1];
+function navFor(m, wide) {
+  if (m.ground == null) return null;   // floating deck maps have several levels: bots steer by sight there
+  const key = m.id + (wide ? 'w' : ''); if (NAV.has(key)) return NAV.get(key);
+  const cs = m.big ? 4 : 2, n = Math.ceil(m.half * 2 / cs), org = -m.half, rad = wide ? 2.8 : BODY.r + .3, edge = m.half - 1.5 - (wide ? 1.5 : 0), W = new Uint8Array(n * n);
+  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+    const x = org + (i + .5) * cs, z = org + (j + .5) * cs; let ok = Math.abs(x) < edge && Math.abs(z) < edge;
+    if (ok) for (const k of m.blocks) { const y0 = k.y || 0; if (y0 < 1.8 && y0 + k.h > 1.3 && Math.abs(x - k.x) < k.hx + rad && Math.abs(z - k.z) < k.hz + rad) { ok = false; break; } }
+    if (ok) for (const k of m.killZones) if (x >= k.min[0] - 1 && x <= k.max[0] + 1 && z >= k.min[2] - 1 && z <= k.max[2] + 1) ok = false;
+    W[j * n + i] = ok ? 1 : 0;
+  }
+  const N = n * n, nav = { n, cs, org, W, g: new Float32Array(N), f: new Float32Array(N), from: new Int32Array(N), mark: new Int32Array(N), done: new Int32Array(N), stamp: 0 };
+  NAV.set(key, nav); return nav;
+}
+function navLine(nav, x0, z0, x1, z1) {   // is the straight line between two points over walkable cells only?
+  const steps = Math.ceil(Math.hypot(x1 - x0, z1 - z0) / (nav.cs * .5));
+  for (let s = 1; s <= steps; s++) { const t = s / steps, i = Math.floor((x0 + (x1 - x0) * t - nav.org) / nav.cs), j = Math.floor((z0 + (z1 - z0) * t - nav.org) / nav.cs); if (i < 0 || j < 0 || i >= nav.n || j >= nav.n || !nav.W[j * nav.n + i]) return false; }
+  return true;
+}
+function navPath(nav, sx, sz, gx, gz) {   // A* across the grid, then pulled straight wherever the way is clear. Returns [[x, z], ...] or null
+  const { n, cs, org, W, g, f, from, mark, done } = nav;
+  const near = (x, z) => {
+    const i0 = clamp(Math.floor((x - org) / cs), 0, n - 1), j0 = clamp(Math.floor((z - org) / cs), 0, n - 1); if (W[j0 * n + i0]) return j0 * n + i0;
+    for (let r = 1; r < 12; r++) for (let dj = -r; dj <= r; dj++) for (let di = -r; di <= r; di++) { if (Math.max(Math.abs(di), Math.abs(dj)) !== r) continue; const i = i0 + di, j = j0 + dj; if (i >= 0 && j >= 0 && i < n && j < n && W[j * n + i]) return j * n + i; }
+    return -1;
+  };
+  const s = near(sx, sz), t = near(gx, gz); if (s < 0 || t < 0) return null;
+  const stamp = ++nav.stamp, ti = t % n, tj = (t / n) | 0, open = [];
+  const h = i => { const a = Math.abs((i % n) - ti), b = Math.abs(((i / n) | 0) - tj); return a + b - .586 * Math.min(a, b); };
+  const push = i => { open.push(i); let a = open.length - 1; while (a > 0) { const b = (a - 1) >> 1; if (f[open[b]] <= f[open[a]]) break; [open[a], open[b]] = [open[b], open[a]]; a = b; } };
+  const pop = () => { const top = open[0], last = open.pop(); if (open.length) { open[0] = last; let a = 0; for (;;) { const l = a * 2 + 1, r = l + 1; let m = a; if (l < open.length && f[open[l]] < f[open[m]]) m = l; if (r < open.length && f[open[r]] < f[open[m]]) m = r; if (m === a) break; [open[a], open[m]] = [open[m], open[a]]; a = m; } } return top; };
+  mark[s] = stamp; g[s] = 0; from[s] = -1; f[s] = h(s); push(s);
+  let found = false, iter = 0;
+  while (open.length && iter++ < 30000) {
+    const c = pop(); if (c === t) { found = true; break; } if (done[c] === stamp) continue; done[c] = stamp;
+    const ci = c % n, cj = (c / n) | 0;
+    for (let k = 0; k < 8; k++) {
+      const di = DI[k], dj = DJ[k], i = ci + di, j = cj + dj; if (i < 0 || j < 0 || i >= n || j >= n) continue;
+      const q = j * n + i; if (!W[q] || (di && dj && (!W[cj * n + i] || !W[j * n + ci]))) continue;   // no cutting corners
+      const ng = g[c] + (di && dj ? 1.414 : 1); if (mark[q] === stamp && ng >= g[q]) continue;
+      mark[q] = stamp; g[q] = ng; from[q] = c; f[q] = ng + h(q); push(q);
+    }
+  }
+  if (!found) return null;
+  const pts = []; for (let c = t; c >= 0; c = from[c]) pts.push([org + ((c % n) + .5) * cs, org + (((c / n) | 0) + .5) * cs]); pts.reverse();
+  const out = []; let a = [sx, sz], idx = 0;
+  while (idx < pts.length) { let far = idx; for (let k = pts.length - 1; k > idx; k--) if (navLine(nav, a[0], a[1], pts[k][0], pts[k][1])) { far = k; break; } out.push(pts[far]); a = pts[far]; idx = far + 1; }
+  return out;
+}
+function routeStep(st, nav, x, z, gx, gz, now) {   // the next point to walk to: straight at the goal when the line is clear, otherwise along a remembered A* route
+  if (!nav || navLine(nav, x, z, gx, gz)) { st.path = null; return [gx, gz]; }
+  if (!st.path || now > st.at || Math.hypot(gx - st.gx, gz - st.gz) > 6) { st.path = navPath(nav, x, z, gx, gz); st.at = now + (map.big ? 1600 : 1000); st.gx = gx; st.gz = gz; st.i = 0; }
+  if (!st.path || !st.path.length) return [gx, gz];
+  while (st.i < st.path.length - 1 && Math.hypot(st.path[st.i][0] - x, st.path[st.i][1] - z) < nav.cs * .9) st.i++;
+  return st.path[st.i];
+}
+// ---- bots and rides: a free vehicle or pillar gun, or the roof gun of a friendly car that already has a driver ----
+const botCanUse = (p, v) => v.type === 'turret' ? !v.driver : !v.driver ? true : v.type === 'car' && !v.gunner && v.driver !== p && (match.mode !== 'tdm' || v.driver.faction === p.faction);
+function botPickVehicle(p) {
+  let best = null, bd = 90;
+  for (const v of vehicles) { if (!botCanUse(p, v)) continue; const d = Math.hypot(v.x - p.x, v.z - p.z) * (v.type === 'turret' ? .8 : 1); if (d < bd) { bd = d; best = v; } }
+  return best;
+}
+function boardBot(p, v, now) {
+  const gun = !!v.driver; if (gun) { v.gunner = p; p.seat = 'g'; } else v.driver = p;
+  p.vehicle = v.id; p.reloadEnd = 0; p.drove = now; p.stuck = 0; p.goalVeh = 0; p.lastSeen = now; p.gunTgt = null; p.rt1 = {}; p.rt2 = {};
+  if (v.type === 'turret') { p.x = v.x; p.z = v.z; p.y = v.sy; } else if (!gun) { v.speed = 0; v.dirty = true; }
+  emit('vehicles', vehRows());
+}
+function botGun(p, v, now) {   // on a pillar gun or a car's roof gun: swing at the nearest enemy it can see and fire in bursts
+  const w = VWEAPONS[p.seat ? 'cargun' : 'turret'], o = { x: v.x, y: (v.y || 0) + (p.seat ? 2.4 : 1.3), z: v.z }, skill = p.skill ?? (p.skill = botSkill(p.lv));
+  let tgt = null, best = w.range;
+  for (const q of players.values()) {
+    if (q === p || !q.alive || q.vehicle === p.vehicle || (match.mode === 'tdm' && q.faction === p.faction)) continue;
+    const d = Math.hypot(q.x - o.x, q.y + 1.2 - o.y, q.z - o.z); if (d >= best) continue;
+    const look = cast(p, o, { x: (q.x - o.x) / d, y: (q.y + 1.2 - o.y) / d, z: (q.z - o.z) / d }, d); if (look.who === q || look.t >= d - 1) { best = d; tgt = q; }   // only targets it can see
+  }
+  if (tgt) p.lastSeen = now;
+  if (now - (p.lastSeen || p.drove) > 9000 || now - p.drove > 70000) { leaveVehicle(p, true); p.boardAt = now + 8000; p.seekAt = now + 15000; return; }
+  if (!p.seat) { p.x = v.x; p.z = v.z; p.y = v.sy; }
+  if (!tgt) return;
+  const dx = tgt.x - o.x, dy = tgt.y + 1.2 - o.y, dz = tgt.z - o.z, want = Math.atan2(-dx, -dz); p.yaw = r3(want); p.pitch = r3(clamp(Math.atan2(dy, Math.hypot(dx, dz)), -1.2, 1.2));
+  if (!p.seat) { v.yaw = r3(wrap(v.yaw + clamp(wrap(want - v.yaw), -.12 - skill * .08, .12 + skill * .08))); v.dirty = true; if (Math.abs(wrap(want - v.yaw)) > .15) return; }
+  if (p.gunTgt !== tgt) { p.gunTgt = tgt; p.nextShot = Math.max(p.nextShot, now + 500 - 350 * skill + Math.random() * 300); }   // a moment to react to a new target
+  if (now < p.nextShot) return;
+  const e = (.03 + best * .0014) * (1.9 - 1.5 * skill), d = { x: dx / best + (Math.random() - .5) * 2 * e, y: dy / best + (Math.random() - .5) * 2 * e, z: dz / best + (Math.random() - .5) * 2 * e }, l = Math.hypot(d.x, d.y, d.z);
+  d.x /= l; d.y /= l; d.z /= l; p.nextShot = now + w.fireRateDelay + Math.random() * 60;
+  const hit = cast(p, o, d, w.range), t = hit.t;
+  emit('fx', { a: [r2(o.x), r2(o.y), r2(o.z)], b: [r2(o.x + d.x * t), r2(o.y + d.y * t), r2(o.z + d.z * t)], f: p.faction, s: p.prof.eq.weapon, i: p.id, e: 0 });
+  applyHit(p, hit, o, d, w);
+}
 const botSkill = lv => clamp(.1 + .72 * (lv - 5) / 90 + (Math.random() - .5) * .3, .06, .88);   // 0 hopeless .. 1 perfect: follows the fake level, jittered so equal levels differ, capped so nobody is perfect
 function steer(p, mx, mz) {   // the clear heading nearest to where the bot wants to go, probing 1.5 m and 3.2 m ahead, so it slides along a wall instead of pushing into it
   const a0 = Math.atan2(mz, mx), s = p.side || 1;
@@ -702,9 +884,10 @@ function botTick(now) {
     if (!p.bot) continue;
     if (!p.alive || match.state !== 'live') { p.vy = 0; p.panic = null; continue; }
     if (p.vehicle) { botDrive(p, now, dt); continue; }
-    if (now > (p.boardAt || 0)) {   // an empty vehicle within reach on the way: press E
-      p.boardAt = now + 700; const v = vehicles.find(x => !x.driver && Math.abs((x.y || 0) - p.y) < 3 && distToVehicle(x, p.x, p.z) < 2.2);
-      if (v && Math.random() < .75) { v.driver = p; p.vehicle = v.id; p.reloadEnd = 0; p.drove = now; p.stuck = 0; v.speed = 0; v.dirty = true; emit('vehicles', vehRows()); continue; }
+    if (now > (p.boardAt || 0)) {   // a usable ride within reach: press E (always for the one it is heading for)
+      p.boardAt = now + 500;
+      const v = vehicles.find(x => botCanUse(p, x) && (x.id === p.goalVeh || (!p.goalVeh && Math.random() < .5)) && distToVehicle(x, p.x, p.z) < 1.7 && (x.type === 'turret' || Math.abs((x.y || 0) - p.y) < 3));
+      if (v) { boardBot(p, v, now); continue; }
     }
     const skill = p.skill ?? (p.skill = botSkill(p.lv)), turnR = BOT.turn * (.4 + .7 * skill);
     let tgt = null, best = Infinity;
@@ -713,18 +896,24 @@ function botTick(now) {
       const d = Math.hypot(q.x - p.x, q.y - p.y, q.z - p.z); if (d < best) { best = d; tgt = q; }
     }
     if (tgt !== p.lastTgt) { p.lastTgt = tgt; p.reactAt = now + (900 - 700 * skill) + Math.random() * 400; }   // a new target takes a moment to notice: slower for weaker bots
-    if (tgt && now > (p.wsAt || 0) && !p.reloadEnd) { p.wsAt = now + 1200; const have = i => i === 0 || (p.held.has(i) && (p.ammos[i] > 0 || p.reserve[i] > 0)); const pick = best > 70 && have(1) ? 1 : best > 14 && best < 90 && have(2) && Math.random() < .5 ? 2 : 0; if (pick !== p.wi) p.wi = pick; }   // sniper at range, rockets mid range, rifle up close
+    if (tgt && now > (p.wsAt || 0) && !p.reloadEnd) { p.wsAt = now + 1200; const ok = i => p.ammos[i] > 0 || p.reserve[i] > 0; let pick = p.wi, bs = -1e9; for (const i of p.loadout) { if (!ok(i)) continue; const w1 = WEAPONS[i], sc = -Math.abs(best - w1.range * .4) - (w1.splash && best < 8 ? 60 : 0); if (sc > bs) { bs = sc; pick = i; } } if (pick !== p.wi) p.wi = pick; }   // each weapon has a distance it likes   // sniper at range, rockets mid range, rifle up close
+    if (!p.goalVeh && now > (p.seekAt || 0)) { p.seekAt = now + 4000; if ((!tgt || best > 30) && Math.random() < .2 + skill * .4) { const v = botPickVehicle(p); if (v) { p.goalVeh = v.id; p.goalVehAt = now + 30000; } } }   // fancy a ride or a gun?
     if (!tgt && (!p.goal || now > p.goalAt || Math.hypot(p.goal.x - p.x, p.goal.z - p.z) < 3)) { p.goal = Math.random() < .3 ? { x: 0, z: 0 } : randOf(map.spawns.ffa); p.goalAt = now + 8000; }
-    const gx = tgt ? tgt.x : p.goal.x, gy = tgt ? tgt.y + 1.2 : p.y + BODY.eye, gz = tgt ? tgt.z : p.goal.z;
+    const gv = p.goalVeh ? vehicles.find(v => v.id === p.goalVeh && botCanUse(p, v)) : null; if (p.goalVeh && (!gv || now > p.goalVehAt)) p.goalVeh = 0;
+    const toVeh = !!gv && (!tgt || best > 22), hold = !!tgt && !toVeh;   // heading for a ride, or hunting
+    const gx = toVeh ? gv.x : tgt ? tgt.x : p.goal.x, gy = hold ? tgt.y + 1.2 : p.y + BODY.eye, gz = toVeh ? gv.z : tgt ? tgt.z : p.goal.z;
+    const rt = p.rt1 || (p.rt1 = {}), nearV = toVeh && Math.hypot(gx - p.x, gz - p.z) < 7, [rx, rz] = nearV ? [gx, gz] : routeStep(rt, navFor(map, false), p.x, p.z, gx, gz, now), rl0 = Math.hypot(rx - p.x, rz - p.z) || 1;   // the memorised route's next point
+    if (nearV) rt.path = null;
+    const faceT = hold && !rt.path;   // face the target when the way is clear, the route when it bends
     const dx = gx - p.x, dy = gy - (p.y + BODY.eye), dz = gz - p.z, flat = Math.hypot(dx, dz) || 1, dist = Math.hypot(dx, dy, dz) || 1;   // the 3D vector to the target
-    const wantYaw = Math.atan2(-dx, -dz);
+    const wantYaw = faceT ? Math.atan2(-dx, -dz) : Math.atan2(-(rx - p.x), -(rz - p.z));
     p.yaw = r3(wrap(p.yaw + clamp(wrap(wantYaw - p.yaw), -turnR, turnR)));                                      // turn smoothly, never snap
     p.pitch = r3(clamp(p.pitch + clamp(Math.atan2(dy, flat) - p.pitch, -.12, .12), -1.2, 1.2));
     if (p.hp >= maxHp(p) * .3) p.panic = null; else if (p.panic === null) p.panic = Math.random() < .4 ? (Math.random() < .5 ? 'strafe' : 'jump') : 'none';   // below 30% health: 40% panic
     if (now > p.strafeAt) { p.strafe = -p.strafe; p.strafeAt = now + 500 + skill * 500 + Math.random() * 700; }
     const w0 = W(p), pref = w0.short === 'SNIPER' ? 55 : w0.short === 'ROCKET' ? 28 : 13, hurtBad = p.hp < maxHp(p) * .3 && skill > .35;   // each weapon wants a fighting distance
-    const fx = dx / flat, fz = dz / flat, side = p.panic === 'strafe' || (tgt && flat < pref * 1.7) ? p.strafe : 0;
-    const fwd = !tgt ? 1 : hurtBad ? -.7 : flat < 3 ? 0 : flat > pref ? 1 : skill > .5 && flat < pref * .5 ? -.5 : .2;   // close in, hold at range, back off if hurt or if good enough to know better
+    const fx = (rx - p.x) / rl0, fz = (rz - p.z) / rl0, side = rt.path ? 0 : p.panic === 'strafe' || (hold && flat < pref * 1.7) ? p.strafe : 0;
+    const fwd = !hold ? 1 : hurtBad ? -.7 : flat < 3 ? 0 : flat > pref ? 1 : skill > .5 && flat < pref * .5 ? -.5 : .2;   // close in, hold at range, back off if hurt or if good enough to know better
     let mx = fx * fwd - fz * side, mz = fz * fwd + fx * side;
     if (now < p.detourUntil) { const c = Math.cos(p.detour), s = Math.sin(p.detour); [mx, mz] = [mx * c - mz * s, mx * s + mz * c]; }   // a forced detour after being stuck
     const ml = Math.hypot(mx, mz);
@@ -746,7 +935,7 @@ function botTick(now) {
     const floor = surfaceY(map, p.x, p.z, p.y + BOT.step);
     if (p.vy <= 0 && p.y <= floor) { p.y = floor; p.vy = 0; p.onGround = true; } else p.onGround = false;
     p.x = r2(p.x); p.y = r2(p.y); p.z = r2(p.z);
-    if (!tgt || p.reloadEnd || now < p.nextShot || now < (p.reactAt || 0) || Math.abs(wrap(wantYaw - p.yaw)) > .3) continue;
+    if (!hold || !faceT || p.reloadEnd || now < p.nextShot || now < (p.reactAt || 0) || Math.abs(wrap(wantYaw - p.yaw)) > .3) continue;
     const w = W(p), o = { x: p.x, y: p.y + BODY.eye, z: p.z }, u = { x: dx / dist, y: dy / dist, z: dz / dist };
     if (dist > w.range) continue;
     if (p.ammos[p.wi] <= 0) { if (p.reserve[p.wi] <= 0 && p.wi) p.wi = 0; else startReload(p); continue; }   // out of rockets or sniper rounds: back to the rifle
@@ -754,10 +943,11 @@ function botTick(now) {
     if (Math.random() < (1 - skill) * .25) { p.nextShot = now + 120 + Math.random() * 300; continue; }   // weaker bots hesitate and waste time
     const e = (.025 + dist * .0012) * (1.9 - 1.5 * skill) * (p.panic ? 1.6 : 1), d = { x: u.x + (Math.random() - .5) * 2 * e, y: u.y + (Math.random() - .5) * 2 * e, z: u.z + (Math.random() - .5) * 2 * e };
     const l = Math.hypot(d.x, d.y, d.z); d.x /= l; d.y /= l; d.z /= l;                        // the random offset: bots do not have perfect aim
-    p.nextShot = now + w.fireRateDelay + Math.random() * 90; p.ammos[p.wi]--;
-    const hit = cast(p, o, d, w.range), t = hit.t;
-    emit('fx', { a: [r2(p.x + d.x * .7), r2(o.y + d.y * .7), r2(p.z + d.z * .7)], b: [r2(o.x + d.x * t), r2(o.y + d.y * t), r2(o.z + d.z * t)], f: p.faction, s: p.prof.eq.weapon, i: p.id, e: w.splash ? w.splash.radius : 0 });
-    applyHit(p, hit, o, d, w);
+    p.nextShot = now + w.fireRateDelay + Math.random() * 90; p.ammos[p.wi] = Math.max(0, p.ammos[p.wi] - (w.ammoPerShot || 1));
+    for (let k = 0; k < (w.pellets || 1); k++) {
+      const dd = w.spread ? spreadDir(d, w.spread) : d, t = rayShot(p, o, dd, w);
+      if (k < 6) emit('fx', { a: [r2(p.x + dd.x * .7), r2(o.y + dd.y * .7), r2(p.z + dd.z * .7)], b: [r2(o.x + dd.x * t), r2(o.y + dd.y * t), r2(o.z + dd.z * t)], f: p.faction, s: p.prof.eq.weapon, i: p.id, e: w.splash ? w.splash.radius : 0 });
+    }
     if (p.alive && p.ammos[p.wi] <= 0) startReload(p);
   }
 }
@@ -791,14 +981,19 @@ function tickPickups(now) {   // map pickups come back, old drops fade away
   if (changed) emit('pk', pickupRows());
 }
 // One shot's damage: a headshot multiplies it, and a rocket also hurts every enemy near the blast (less the further they are; never you or your team).
-function applyHit(shooter, hit, o, dir, w) {
-  if (hit.who) hurt(shooter, hit.who, Math.round(w.damage * (hit.head ? w.headshotMultiplier : 1) * (w.splash ? 1 - frameOf(hit.who).blast : 1)), hit.head);
+function applyHit(shooter, hit, o, dir, w, dist) {
+  if (hit.who) {
+    const dmg = Math.round(w.damage * (w.falloff && dist != null ? falloffMul(w, dist) : 1) * (hit.head ? w.headshotMultiplier : 1) * (w.splash ? 1 - frameOf(hit.who).blast : 1));
+    hurt(shooter, hit.who, dmg, hit.head);
+    if (w.lifesteal && shooter.alive) { shooter.hp = Math.min(maxHp(shooter), shooter.hp + dmg * w.lifesteal); emitYou(shooter); }   // vampire weapons heal you
+    if (w.burn && hit.who.alive) { hit.who.burnUntil = Date.now() + w.burn.secs * 1000; hit.who.burnDps = w.burn.dps; hit.who.burnBy = shooter; }   // and fire keeps burning
+  }
   if (!w.splash) return;
   const x = o.x + dir.x * hit.t, y = o.y + dir.y * hit.t, z = o.z + dir.z * hit.t;
   for (const q of [...players.values()]) {
     if (q === shooter || q === hit.who || !q.alive || (match.mode === 'tdm' && q.faction === shooter.faction)) continue;
     const d = Math.hypot(q.x - x, q.y + 1 - y, q.z - z);
-    if (d < w.splash.radius) hurt(shooter, q, Math.round(w.splash.damage * (1 - .7 * d / w.splash.radius) * (1 - frameOf(q).blast)), false);
+    if (d < w.splash.radius) { hurt(shooter, q, Math.round(w.splash.damage * (1 - .7 * d / w.splash.radius) * (1 - frameOf(q).blast)), false); if (w.burn && q.alive) { q.burnUntil = Date.now() + w.burn.secs * 1000; q.burnDps = w.burn.dps; q.burnBy = shooter; } }
   }
 }
 
@@ -852,12 +1047,14 @@ function vehBlocked(v, x, z) {   // a ground vehicle or mech cannot drive throug
 // A bot at the wheel: cars charge the nearest enemy (the roadkill check does the rest), helicopters climb to 22 m and rocket from range, mechs walk up and use their miniguns.
 function botDrive(p, now, dt) {
   const v = vehicles.find(x => x.id === p.vehicle); if (!v) { p.vehicle = 0; return; }
+  if (v.type === 'turret' || p.seat) { botGun(p, v, now); return; }
   let tgt = null, best = Infinity;
   for (const q of players.values()) { if (q === p || !q.alive || q.vehicle === p.vehicle || (match.mode === 'tdm' && q.faction === p.faction)) continue; const d = Math.hypot(q.x - v.x, q.z - v.z); if (d < best) { best = d; tgt = q; } }
-  if (!tgt || now - p.drove > 45000 || p.stuck > 40) { leaveVehicle(p, true); p.stuck = 0; p.boardAt = now + 8000; return; }   // nobody left to hunt, or stuck: get out
+  if (!tgt || now - p.drove > 45000 || p.stuck > 40) { leaveVehicle(p, true); p.stuck = 0; p.boardAt = now + 8000; p.seekAt = now + 15000; return; }   // nobody left to hunt, or stuck: get out
   const dx = tgt.x - v.x, dz = tgt.z - v.z, flat = Math.hypot(dx, dz) || 1, want = Math.atan2(-dx, -dz), T = vd(v), w = VWEAPONS[v.type];
-  v.yaw = r3(wrap(v.yaw + clamp(wrap(want - v.yaw), -.08, .08)));
-  const sp = v.type === 'car' ? 18 : v.type === 'tank' ? (flat < 30 ? 0 : 7.5) : v.type === 'heli' ? (flat < 70 ? 0 : 14) : (flat < 40 ? 0 : 4.2);
+  const [rx, rz] = v.type === 'heli' ? [tgt.x, tgt.z] : routeStep(p.rt2 || (p.rt2 = {}), navFor(map, true), v.x, v.z, tgt.x, tgt.z, now), mvWant = Math.atan2(-(rx - v.x), -(rz - v.z));   // ground vehicles follow the memorised route
+  v.yaw = r3(wrap(v.yaw + clamp(wrap(mvWant - v.yaw), -.08, .08)));
+  const sp = (v.type === 'car' ? 18 : v.type === 'tank' ? (flat < 30 ? 0 : 7.5) : v.type === 'heli' ? (flat < 70 ? 0 : 14) : (flat < 40 ? 0 : 4.2)) * (v.type === 'heli' ? 1 : clamp(1.15 - Math.abs(wrap(mvWant - v.yaw)), .2, 1));   // slow down to turn corners
   const nx = v.x - Math.sin(v.yaw) * sp * dt, nz = v.z - Math.cos(v.yaw) * sp * dt;
   if (v.type === 'heli' || !vehBlocked(v, nx, nz)) { v.x = nx; v.z = nz; p.stuck = 0; } else { v.yaw = r3(wrap(v.yaw + .5)); p.stuck++; }   // blocked: swing away
   if (v.type === 'heli') v.y = Math.min(22, (v.y || 0) + 6 * dt);
@@ -946,13 +1143,14 @@ function connect(socket, room) {
     const o = { x: d.ox, y: d.oy, z: d.oz }, dir = { x: d.dx / len, y: d.dy / len, z: d.dz / len };
     if (Math.hypot(o.x - me.x, o.y - (me.y + (veh ? vd(veh).h * .7 : BODY.eye)), o.z - me.z) > (veh ? 9 : 6)) return;   // the ray must start near the shooter (or the vehicle's guns)
     if (veh) { if (!heatOk(veh, w, now)) return; me.nextShot = now + w.fireRateDelay * .8; }   // vehicle guns have no ammo; the mech overheats instead
-    else { if (me.ammos[me.wi] <= 0) { startReload(me); return; } me.nextShot = now + w.fireRateDelay * .8; me.ammos[me.wi]--; }
-    const hit = cast(me, o, dir, w.range), t = hit.t;
-    socket.to(room.id).emit('fx', {                                                    // let everyone else see the tracer
-      a: veh ? [r2(o.x), r2(o.y), r2(o.z)] : [r2(me.x + dir.x * .7), r2(me.y + BODY.eye + dir.y * .7), r2(me.z + dir.z * .7)],
-      b: [r2(o.x + dir.x * t), r2(o.y + dir.y * t), r2(o.z + dir.z * t)], f: me.faction, s: profOf(me).eq.weapon, i: me.id, e: w.splash ? w.splash.radius : 0
-    });
-    applyHit(me, hit, o, dir, w);
+    else { if (me.ammos[me.wi] <= 0) { startReload(me); return; } me.nextShot = now + w.fireRateDelay * .8; me.ammos[me.wi] = Math.max(0, me.ammos[me.wi] - (w.ammoPerShot || 1)); }
+    for (let k = 0; k < (w.pellets || 1); k++) {   // shotguns and burst rifles send several rays per trigger pull
+      const dd = w.spread ? spreadDir(dir, w.spread) : dir, t = rayShot(me, o, dd, w);
+      if (k < 6) socket.to(room.id).emit('fx', {                                                    // let everyone else see the tracer
+        a: veh ? [r2(o.x), r2(o.y), r2(o.z)] : [r2(me.x + dd.x * .7), r2(me.y + BODY.eye + dd.y * .7), r2(me.z + dd.z * .7)],
+        b: [r2(o.x + dd.x * t), r2(o.y + dd.y * t), r2(o.z + dd.z * t)], f: me.faction, s: profOf(me).eq.weapon, i: me.id, e: w.splash ? w.splash.radius : 0
+      });
+    }
     if (!veh && me.alive && me.ammos[me.wi] <= 0) startReload(me);
   });
 
@@ -960,7 +1158,7 @@ function connect(socket, room) {
 
   on('switch', i => {                      // changing weapon cancels a reload and costs a short draw time
     if (!Number.isInteger(i) || i < 0 || i >= WEAPONS.length || i === me.wi || !me.alive || me.vehicle) return;
-    if (lvOf(me) < WEAPONS[i].unlockLevel && !me.held.has(i)) { emitYou(me); return notice(me, WEAPONS[i].name + ' unlocks at level ' + WEAPONS[i].unlockLevel + ', or find one on the map'); }
+    if (!me.held.has(i) && !(me.loadout || []).includes(i)) { emitYou(me); return notice(me, WEAPONS[i].name + ' is not in your loadout: set it in the shop, or find one on the map'); }
     me.wi = i; me.reloadEnd = 0; me.nextShot = Math.max(me.nextShot, Date.now() + SWITCH_MS);
     emitYou(me);
   });
@@ -1016,6 +1214,13 @@ function connect(socket, room) {
     equip(me, s);
   });
 
+  on('loadout', d => {   // choose which three weapons you carry (keys 1-3): only ones your level has unlocked
+    const now = Date.now(); if (!d || now - me.shopAt < 150) return; me.shopAt = now;
+    if (!Number.isInteger(d.slot) || d.slot < 0 || d.slot > 2 || !Number.isInteger(d.wi) || d.wi < 0 || d.wi >= WEAPONS.length) return;
+    if (lvOf(me) < WEAPONS[d.wi].unlockLevel) return notice(me, WEAPONS[d.wi].name + ' unlocks at level ' + WEAPONS[d.wi].unlockLevel);
+    const pr = profOf(me), lo = cleanLoadout(pr.eq.loadout).slice(); lo[d.slot] = d.wi; pr.eq.loadout = lo; pr.rev++; store.set(me.token, pr);
+    me.loadout = loadoutOf(me); me.sock.emit('profile', profileView(me)); notice(me, WEAPONS[d.wi].name + ' is now on key ' + (d.slot + 1) + (me.alive ? ' (ready when you respawn)' : ''));
+  });
   on('equip', id => {
     const s = skinById.get(id), now = Date.now();
     if (!s || now - me.shopAt < 200) return; me.shopAt = now;
@@ -1050,6 +1255,8 @@ function tickRoom() {
     if (p.reloadEnd && now >= p.reloadEnd) finishReload(p);
     if (tick % (TICK_HZ * 2) === 0) { const t0 = now; p.sock.emit('lag', () => { p.rtt = Math.min(1000, Date.now() - t0); }); }
   }
+  if (match.state === 'live' && match.endsAt && now >= match.endsAt) timeUp();
+  for (const p of players.values()) if (p.alive && p.burnUntil > now && now >= (p.burnNext || 0)) { p.burnNext = now + 500; hurt(p.burnBy || p, p, Math.max(1, Math.round(p.burnDps / 2)), false, 'burn'); }   // on fire
   botTick(now); tickVehicles(now); tickTurrets(now); tickPickups(now); if (tick % TICK_HZ === 0) balanceBots();   // bots think, and empty slots are filled once a second
   if (!players.size) return;
   const list = [...players.values()].map(p => [p.id, p.x, p.y, p.z, p.yaw, p.pitch, p.alive ? 1 : 0, p.vehicle, p.wi]);
@@ -1072,4 +1279,4 @@ createRoom();   // keep one room open so the first player joins at once
 for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { store.flush(); process.exit(0); });   // save on a clean shutdown
 server.listen(PORT, () => console.log(`Riftline server listening on port ${PORT}, mode ${MODE}, map ${MAP_ENV}`));
 
-if (require.main !== module) module.exports = { MAPS, validateMap, surfaceY, rayRamp, rayBox, rampY, clientMap, rooms, inRoom, createRoom, cast, applyHit, hurt, takePickup, WEAPONS, tickVehicles, tickTurrets, heatOk, VWEAPONS };   // lets the tests reach the geometry helpers
+if (require.main !== module) module.exports = { navFor, navPath, navLine, MAPS, validateMap, surfaceY, rayRamp, rayBox, rampY, clientMap, rooms, inRoom, createRoom, cast, applyHit, hurt, takePickup, WEAPONS, tickVehicles, tickTurrets, heatOk, VWEAPONS };   // lets the tests reach the geometry helpers
