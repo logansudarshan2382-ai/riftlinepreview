@@ -1,11 +1,11 @@
 'use strict';
 /*
- * Riftline game server (Step 7): modes, weapons, three maps (one a floating space station), a drivable vehicle, player progression,
+ * Riftline game server: modes, weapons, five 600 x 600 m natural maps (each with two team bases), vehicles, player progression,
  * a spawn-point matrix and out-of-bounds / kill-zone deaths.
  *
  * Environment variables (all optional):
  *   MODE       tdm | ffa            lock one game mode (default: alternate every match)
- *   MAP        field | arena | station   lock one map (default: rotate through all of them)
+ *   MAP        field | glacier | arena | station | frontier   lock one map (default: rotate through all of them)
  *   ADMIN_KEY  any secret text      turns on /admin so you can load a map or mode on the spot (see below)
  *   TDM_LIMIT, FFA_LIMIT            kills needed to win
  *   ALLOWED_ORIGINS                 your website address(es), comma separated
@@ -248,7 +248,7 @@ function rayShot(me, o, dir, w) {   // one ray of a shot: damage, piercing throu
 // ---- maps ----
 // A map is plain data. The server sends it to every player and each browser builds the scene from it.
 //   blocks     solid boxes: x/z centre, hx/hz half-sizes, h height, y bottom (default 0), kind = how it looks
-//              (crate, pillar, wall, building, platform, deck, ceiling). You can stand on top, bump your head underneath, never walk through.
+//              (rock, cliff, mesa, mound, spire, tree, pine, cactus, crate, wall, building, platform, deck, ceiling). You can stand on top, bump your head underneath, never walk through.
 //   ramps      walkable slopes: x/z centre, hx/hz half-sizes, y0 = height at the low end, y1 = height at the high end, dir = the way it climbs (N, S, E, W)
 //   ground     height of an invisible floor (0), or null when blocks are the only floors, as on a floating arena
 //   bounds     the play box [min x,y,z] to [max x,y,z]. edge 'wall': an invisible wall keeps you inside.
@@ -264,76 +264,39 @@ const at = (x, y, z, look = [0, 0]) => ({ x, y, z, yaw: face(x, z, look[0], look
 const spawnRow = (x0, z0, x1, z1, n, look = [0, 0], y = 0) => Array.from({ length: n }, (_, i) => { const t = n === 1 ? .5 : i / (n - 1); return at(rd(x0 + (x1 - x0) * t), y, rd(z0 + (z1 - z0) * t), look); });
 const spawnRing = (r, n, look = [0, 0]) => Array.from({ length: n }, (_, i) => { const a = i * 2 * Math.PI / n; return at(rd(r * Math.cos(a)), 0, rd(r * Math.sin(a)), look); });
 
-const MAPS = {
-  field: {   // open ground, tall pillars, low cover and two bunkers
-    id: 'field', name: 'Pillar Fields', half: 60, theme: 'meadow', sky: 0xc2e7ff, fog: [60, 260], sun: true, ceiling: 0, lights: [], tint: 0xe6edf3, accent: 0x7ec8ff, stars: false,
-    ground: 0, bounds: { min: [-60, -2, -60], max: [60, 40, 60], edge: 'wall' }, killZones: [], ramps: [],
-    blocks: [B(-14, -14, 1, 1, 7, 'pillar'), B(14, -14, 1, 1, 7, 'pillar'), B(-14, 14, 1, 1, 7, 'pillar'), B(14, 14, 1, 1, 7, 'pillar'),
-             B(-32, -8, 1, 1, 7, 'pillar'), B(32, -8, 1, 1, 7, 'pillar'), B(-32, 8, 1, 1, 7, 'pillar'), B(32, 8, 1, 1, 7, 'pillar'),
-             B(0, -6, 2, .6, 1, 'crate'), B(-8, 4, .6, 2, 1, 'crate'), B(8, 4, .6, 2, 1, 'crate'), B(0, 22, 3, .6, 1.2, 'crate'),
-             B(-26, 26, 5, 4, 5, 'building'), B(26, -26, 5, 4, 5, 'building')],
-    spawns: { ffa: spawnRing(46, 16), vanguard: spawnRow(-35, -46, 35, -46, 8), horizon: spawnRow(-35, 46, 35, 46, 8) },
-    vehicles: [{ x: 0, z: 12, yaw: 0 }]
-  },
-  glacier: {   // an ice island: white walls and bunkers, a central plateau reached by two ramps, and four tall ice pillars with gun nests on top
-    id: 'glacier', name: 'Glacier Run', half: 70, theme: 'ice', sky: 0xe6f6ff, fog: [70, 300], sun: true, ceiling: 0, lights: [], tint: 0xeaf4fb, accent: 0x6fd3ff, stars: false,
-    ground: 0, bounds: { min: [-70, -2, -70], max: [70, 40, 70], edge: 'wall' }, killZones: [],
-    ramps: [RAMP(10, 0, 3, 3, 0, 2, 'W'), RAMP(-10, 0, 3, 3, 0, 2, 'E')],
-    blocks: [B(0, 0, 7, 7, 2, 'platform'), B(-20, -20, 1.2, 1.2, 8, 'pillar'), B(20, -20, 1.2, 1.2, 8, 'pillar'), B(-20, 20, 1.2, 1.2, 8, 'pillar'), B(20, 20, 1.2, 1.2, 8, 'pillar'),
-             B(-30, 0, .8, 10, 3), B(30, 0, .8, 10, 3), B(0, -26, 10, .8, 3), B(0, 26, 10, .8, 3),
-             B(-46, -14, 6, 5, 5, 'building'), B(46, 14, 6, 5, 5, 'building'),
-             B(-12, -40, 2, .8, 1.2, 'crate'), B(12, -40, 2, .8, 1.2, 'crate'), B(-12, 40, 2, .8, 1.2, 'crate'), B(12, 40, 2, .8, 1.2, 'crate'), B(-8, 14, .8, 2, 1.2, 'crate'), B(8, -14, .8, 2, 1.2, 'crate')],
-    spawns: { ffa: spawnRing(56, 24), vanguard: spawnRow(-45, -60, 45, -60, 12), horizon: spawnRow(-45, 60, 45, 60, 12) },
-    vehicles: [{ x: -38, z: 0, yaw: 0 }, { x: 38, z: 0, yaw: 0, type: 'tank' }]
-  },
-  arena: {   // a tight indoor arena: metal walls, doorways, a central block and a ceiling
-    id: 'arena', name: 'Sunbaked Fort', half: 24, theme: 'desert', sky: 0xffd27f, fog: [30, 170], sun: true, ceiling: 0, lights: [], tint: 0xe3c196, accent: 0xff9a4d, stars: false,
-    ground: 0, bounds: { min: [-24, -2, -24], max: [24, 40, 24], edge: 'wall' }, killZones: [], ramps: [],
-    blocks: [B(0, -24.5, 25, .5, 5), B(0, 24.5, 25, .5, 5), B(-24.5, 0, .5, 25, 5), B(24.5, 0, .5, 25, 5),
-             B(-12, -10, 6, .5, 4), B(12, -10, 6, .5, 4), B(-12, 10, 6, .5, 4), B(12, 10, 6, .5, 4),
-             B(0, 0, 2, 2, 3, 'pillar'), B(-16, 0, .5, 3, 2.5), B(16, 0, .5, 3, 2.5),
-             B(-6, -18, 1, 1, 1, 'crate'), B(6, -18, 1, 1, 1, 'crate'), B(-6, 18, 1, 1, 1, 'crate'), B(6, 18, 1, 1, 1, 'crate')],
-    spawns: {
-      ffa: [...spawnRow(-20, -21, 20, -21, 5), ...spawnRow(-20, 21, 20, 21, 5), at(-20, 0, -6), at(-20, 0, 6), at(20, 0, -6), at(20, 0, 6), at(-10, 0, 0), at(10, 0, 0)],
-      vanguard: spawnRow(-20, -21.5, 20, -21.5, 8), horizon: spawnRow(-20, 21.5, 20, 21.5, 8)
-    },
-    vehicles: [{ x: 0, z: 16, yaw: 0 }]
-  },
-  station: {   // a floating space station: a deck around an open reactor shaft, raised platforms joined by ramps and skybridges, metal corridors
-    id: 'station', name: 'Orbital Station', half: 30, theme: 'night', sky: 0x1f2d66, fog: [70, 280], sun: true, ceiling: 0, lights: [], tint: 0xb4bdd6, accent: 0xb48cff, stars: true, hull: { top: 44, bottom: 14, depth: 20 },
-    ground: null, bounds: { min: [-70, -25, -70], max: [70, 60, 70], edge: 'void' },
-    killZones: [{ min: [-4, -25, -4], max: [4, -.5, 4], label: 'fell into the reactor shaft' }],
-    blocks: [
-      B(0, -17, 30, 13, 1, 'deck', -1), B(0, 17, 30, 13, 1, 'deck', -1), B(-17, 0, 13, 4, 1, 'deck', -1), B(17, 0, 13, 4, 1, 'deck', -1),   // the deck, with an 8 x 8 hole in the middle
-      B(0, 0, 1.5, 4, .4, 'platform', -.4),                                                                                                  // a catwalk across the shaft
-      B(-20, -20, 6, 6, .6, 'platform', 3.4), B(20, -20, 6, 6, .6, 'platform', 3.4), B(-20, 20, 6, 6, .6, 'platform', 3.4), B(20, 20, 6, 6, .6, 'platform', 3.4),   // four raised towers (top at 4 m)
-      B(0, -20, 14, 1.5, .6, 'platform', 3.4), B(0, 20, 14, 1.5, .6, 'platform', 3.4),                                                       // skybridges between them
-      B(-18, -3.2, 10, .4, 3.6), B(-18, 3.2, 10, .4, 3.6), B(-18, 0, 10, 3.6, .5, 'ceiling', 3.6),                                           // west corridor
-      B(18, -3.2, 10, .4, 3.6), B(18, 3.2, 10, .4, 3.6), B(18, 0, 10, 3.6, .5, 'ceiling', 3.6),                                              // east corridor
-      B(-10, -10, 1, 1, 1.5, 'crate'), B(10, -10, 1, 1, 1.5, 'crate'), B(-10, 10, 1, 1, 1.5, 'crate'), B(10, 10, 1, 1, 1.5, 'crate'),
-      B(-7, -7, .6, .6, 5, 'pillar'), B(7, -7, .6, .6, 5, 'pillar'), B(-7, 7, .6, .6, 5, 'pillar'), B(7, 7, .6, .6, 5, 'pillar')
-    ],
-    ramps: [RAMP(-20, -9, 2.5, 5, 0, 4, 'N'), RAMP(20, -9, 2.5, 5, 0, 4, 'N'), RAMP(-20, 9, 2.5, 5, 0, 4, 'S'), RAMP(20, 9, 2.5, 5, 0, 4, 'S')],   // ground to tower top, 10 m long
-    spawns: {
-      ffa: [...spawnRow(-10, -27, 10, -27, 4), ...spawnRow(-10, 27, 10, 27, 4), at(-27, 0, -8), at(27, 0, -8), at(-27, 0, 8), at(27, 0, 8),
-            at(-20, 4, -20), at(20, 4, -20), at(-20, 4, 20), at(20, 4, 20)],
-      vanguard: [...spawnRow(-12, -27, 12, -27, 6), ...spawnRow(-5, -23.5, 5, -23.5, 2)],
-      horizon: [...spawnRow(-12, 27, 12, 27, 6), ...spawnRow(-5, 23.5, 5, 23.5, 2)]
-    },
-    vehicles: [{ x: 0, z: 12, yaw: 0 }]
-  }
-};
-// ---- Twin Citadels: a 600 x 600 m map (100 times the area of Pillar Fields). Two fortress bases face each other across 360 m of cluttered battlefield.
-// It is generated from a fixed seed, so every server builds exactly the same map. In team deathmatch each team spawns deep inside its own base. ----
-function buildFrontier() {
-  let seed = 20261013; const R = () => (seed = (seed * 16807) % 2147483647) / 2147483647, between = (a, b) => a + (b - a) * R();
-  const blocks = [], ramps = [], bases = [], spawns = { ffa: [], vanguard: [], horizon: [] }, vehicles = [], pickups = [], low = [], turrets = [];   // pickups: floating weapons, wi = index into WEAPONS
-  const free = (x, z, hx, hz, pad = 2.5) => !blocks.some(o => Math.abs(x - o.x) < hx + o.hx + pad && Math.abs(z - o.z) < hz + o.hz + pad) && !ramps.some(r => Math.abs(x - r.x) < hx + r.hx + pad && Math.abs(z - r.z) < hz + r.hz + pad);
-  const mid = (x, z, hx, hz, h, kind, y = 0) => { const b = B(x, z, hx, hz, h, kind, y); blocks.push(b); return b; };
+// ---- The five maps. Every one is 600 x 600 m: two fortress bases face each other across a wide natural landscape of cliffs, mesas, hills,
+// boulders, craters and trees. Each is generated from a fixed seed, so every server builds exactly the same map. In team deathmatch each team spawns deep inside its own base.
+// Natural kinds: rock (boulder), cliff (long ridge), mesa (flat-topped plateau, climbed by its ramps), mound (low hill or dune), spire (tall rock needle: the tallest carry gun nests),
+// tree / pine / cactus (solid trunks). The bases are sci-fi walls (wall, building, platform, crate).
+const MAPS = {};
+const QUARTER = { N: 'W', S: 'E', E: 'N', W: 'S' };   // a quarter turn about the middle sends (x, z) to (z, -x), so a ramp that climbed north now climbs west
+function rotateMap(m) {   // build once with the bases at the north and south ends, then turn the whole map so some have them east and west
+  const wrapPi = a => ((a + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
+  const P = o => { const x = o.x; o.x = o.z; o.z = rd(-x) + 0; return o; }, S = o => { P(o); [o.hx, o.hz] = [o.hz, o.hx]; return o; }, Y = o => { o.yaw = rd(wrapPi(o.yaw + Math.PI / 2)); return o; };
+  m.blocks.forEach(S); m.bases.forEach(S); m.ramps.forEach(r => { S(r); r.dir = QUARTER[r.dir]; });
+  for (const l of Object.values(m.spawns)) l.forEach(o => Y(P(o)));
+  m.vehicles.forEach(o => Y(P(o))); m.pickups.forEach(P); m.turrets.forEach(P);
+  return m;
+}
+function buildWild(c) {
+  let seed = c.seed; const R = () => (seed = (seed * 16807) % 2147483647) / 2147483647, between = (a, b) => a + (b - a) * R();
+  const blocks = [], ramps = [], bases = [], spawns = { ffa: [], vanguard: [], horizon: [] }, vehicles = [], pickups = [], turrets = []; let np = 0;
+  const free = (x, z, hx, hz, pad = 2.5, skip = null) => !blocks.some(o => o !== skip && Math.abs(x - o.x) < hx + o.hx + pad && Math.abs(z - o.z) < hz + o.hz + pad) && !ramps.some(r => Math.abs(x - r.x) < hx + r.hx + pad && Math.abs(z - r.z) < hz + r.hz + pad);
+  const keep = (x, z, hx, hz) => Math.abs(x) - hx < 94 && Math.abs(z) + hz > 148;   // the two bases and the open ground in front of their gates stay clear of landscape
+  const inside = (x, z, hx, hz) => Math.abs(x) + hx < 298 && Math.abs(z) + hz < 298;
+  const add = (x, z, hx, hz, h, kind, y = 0) => { const b = B(rd(x), rd(z), rd(hx), rd(hz), rd(h), kind, rd(y)); blocks.push(b); return b; };
+  const put = (x, z, hx, hz, h, kind, y = 0, pad = 2.5) => !keep(x, z, hx, hz) && inside(x, z, hx, hz) && free(x, z, hx, hz, pad) ? add(x, z, hx, hz, h, kind, y) : null;
+  const lean = (b, side, len, wid) => {   // a natural ramp up one face of a block. It climbs toward the block and ends flush with its top
+    const y0 = b.y || 0, y1 = y0 + b.h;
+    const r = { S: () => RAMP(b.x, b.z + b.hz + len / 2, wid, len / 2, y0, y1, 'N'), N: () => RAMP(b.x, b.z - b.hz - len / 2, wid, len / 2, y0, y1, 'S'), E: () => RAMP(b.x + b.hx + len / 2, b.z, len / 2, wid, y0, y1, 'W'), W: () => RAMP(b.x - b.hx - len / 2, b.z, len / 2, wid, y0, y1, 'E') }[side]();
+    if (keep(r.x, r.z, r.hx, r.hz) || !inside(r.x, r.z, r.hx, r.hz) || !free(r.x, r.z, r.hx, r.hz, 1, b)) return false;
+    for (const k of ['x', 'z', 'hx', 'hz', 'y0', 'y1']) r[k] = rd(r[k]);
+    r.nat = 1; ramps.push(r); return true;
+  };
   // The bases are written once in base coordinates (d = metres in from the map edge) and mirrored for the other team. `t` marks a block as a team's, which the browser lights up.
   for (const [team, sz] of [['vanguard', -1], ['horizon', 1]]) {
     const Z = d => sz * (300 - d), dir = { in: sz < 0 ? 'S' : 'N', out: sz < 0 ? 'N' : 'S' };
-    const W = (x, d, hx, hd, h, kind = 'wall', y = 0) => { const b = mid(x, Z(d), hx, hd, h, kind, y); b.t = team; return b; };
+    const W = (x, d, hx, hd, h, kind = 'wall', y = 0) => { const b = add(x, Z(d), hx, hd, h, kind, y); b.t = team; return b; };
     W(0, 2, 80, 2, 14); W(-78, 61, 2, 57, 12); W(78, 61, 2, 57, 12); W(-47, 118, 33, 2, 12); W(47, 118, 33, 2, 12);   // back, side and front walls; the gate is the 28 m gap in the front wall
     W(-36, 82, 22, 1.5, 6); W(36, 82, 22, 1.5, 6);                                                                     // an inner defensive line, also with a 28 m opening
     W(0, 40, 20, 8, 5, 'building'); ramps.push(RAMP(0, Z(60.5), 5, 12.5, 0, 5, dir.out));                           // the keep, with a ramp up to its roof; the spawns sit behind it
@@ -343,53 +306,78 @@ function buildFrontier() {
       ramps.push(d === 12 ? RAMP(x, Z(36.5), 3, 17.5, 0, 14, dir.out) : RAMP(x, Z(83.5), 3, 17.5, 0, 14, dir.in));
       pickups.push({ wi: 1, x, y: 15.2, z: Z(d) });   // a sniper rifle on every tower deck
     }
-    // loose cover in the yard, keeping the two vehicle bays at x = +-30 clear
-    for (let i = 0; i < 10; i++) { const x = between(-60, 60), d = between(52, 112); if (Math.abs(x) > 14 && !(d > 90 && Math.abs(Math.abs(x) - 30) < 8) && free(x, Z(d), 1.5, 1.5)) mid(x, Z(d), 1.2, 1.2, 1.2, 'crate'); }   // loose cover in the yard
+    for (let i = 0; i < 10; i++) { const x = between(-60, 60), d = between(52, 112); if (Math.abs(x) > 14 && !(d > 90 && Math.abs(Math.abs(x) - 30) < 8) && free(x, Z(d), 1.5, 1.5)) add(x, Z(d), 1.2, 1.2, 1.2, 'crate'); }   // loose cover in the yard, keeping the vehicle bays clear
     bases.push({ team, x: 0, z: Z(60), hx: 76, hz: 56 });
     spawns[team] = [...spawnRow(-24, Z(12), 24, Z(12), 8), ...spawnRow(-24, Z(20), 24, Z(20), 8)];
-    const vy = sz < 0 ? Math.PI : 0; vehicles.push({ x: -34, z: Z(100), yaw: vy, type: 'car' }, { x: 34, z: Z(100), yaw: vy, type: 'mech' }, { x: 0, z: Z(96), yaw: vy, type: 'heli' }, { x: 26, z: Z(92), yaw: vy, type: 'tank' });   // a car, a mech and a helicopter in each base
+    const vy = sz < 0 ? Math.PI : 0; vehicles.push({ x: -34, z: Z(100), yaw: vy, type: 'car' }, { x: 34, z: Z(100), yaw: vy, type: 'mech' }, { x: 0, z: Z(96), yaw: vy, type: 'heli' }, { x: 26, z: Z(92), yaw: vy, type: 'tank' });   // a car, a mech, a helicopter and a tank in each base
     for (const x of [-17, 17]) { W(x, 110, 1.4, 1.4, 2, 'building'); turrets.push({ team, x, y: 2, z: Z(110) }); }   // a sentry turret on a pedestal either side of the gate
   }
-  // The middle: a stepped ziggurat at the centre, then arenas of trenches, pillar fields, tiered platforms and crate yards, then scattered cover.
-  const crate = (x, z, s = between(1, 2.2), h = between(1, 2.4)) => { mid(x, z, s, s, h, 'crate'); if (R() < .35) mid(x + between(-.3, .3), z, s * .7, s * .7, h * .7, 'crate', h); };   // sometimes stacked
-  mid(0, 0, 24, 24, 2, 'platform'); mid(0, 0, 16, 16, 2, 'platform', 2); mid(0, 0, 8, 8, 2, 'platform', 4);
-  for (const s of [-1, 1]) { const d = s > 0 ? 'N' : 'S'; ramps.push(RAMP(0, s * 26.5, 5, 2.5, 0, 2, d), RAMP(0, s * 18.5, 5, 2.5, 2, 4, d), RAMP(0, s * 10.5, 4, 2.5, 4, 6, d), RAMP(s * 26.5, 0, 2.5, 5, 0, 2, s > 0 ? 'W' : 'E')); }
-  pickups.push({ wi: 2, x: 0, y: 7.2, z: 0 }, { wi: 1, x: -100, y: 4.8, z: 0 }, { wi: 1, x: 100, y: 4.8, z: 0 });   // a rocket launcher on top of the ziggurat, snipers on the tiered platforms
-  for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4; mid(Math.round(38 * Math.cos(a)), Math.round(38 * Math.sin(a)), 1.2, 1.2, 10, 'pillar'); }
-  const L = (cx, cz, f, lx, lz, hx, hz, h, kind, y = 0) => mid(cx + (f ? lz : lx), cz + (f ? lx : lz), f ? hz : hx, f ? hx : hz, h, kind, y);   // f turns an arena a quarter turn
-  const arena = {
-    trench(cx, cz, f) {
-      for (const s of [-1, 1]) { L(cx, cz, f, 0, s * 6, 24, .8, 3, 'wall'); L(cx, cz, f, s * 29, 0, 3, 3, 4, 'building'); }
-      [-16, 0, 16].forEach((x, i) => L(cx, cz, f, x, i % 2 ? 2.6 : -2.6, .8, 2.6, 2.2, 'wall'));                      // traverses that make you zigzag
-      for (let i = 0; i < 4; i++) { const x = cx + (f ? between(-4, 4) : between(-20, 20)), z = cz + (f ? between(-20, 20) : between(-4, 4)); if (free(x, z, 1.2, 1.2, 1)) crate(x, z, 1, 1.2); }
-    },
-    pillars(cx, cz) { for (let i = -2; i <= 1; i++) for (let j = -2; j <= 1; j++) if (R() < .85) mid(cx + i * 12 + 6, cz + j * 12 + 6, 1.1, 1.1, 9, 'pillar'); },
-    tiers(cx, cz) {
-      mid(cx, cz, 12, 12, 1.8, 'platform'); mid(cx, cz, 7, 7, 1.8, 'platform', 1.8);
-      for (const s of [-1, 1]) { const d = s > 0 ? 'N' : 'S'; ramps.push(RAMP(cx, cz + s * 14.25, 4, 2.25, 0, 1.8, d), RAMP(cx, cz + s * 9.25, 3.5, 2.25, 1.8, 3.6, d)); }
-    },
-    yard(cx, cz) { for (let i = 0; i < 14; i++) { const x = cx + between(-18, 18), z = cz + between(-18, 18); if (free(x, z, 2.3, 2.3, 1.5)) crate(x, z); } }
+  // The middle: a three-step rocky hill, climbed by ramps, with the rocket launcher on top.
+  [24, 16, 8].forEach((s, i) => { add(0, 0, s, s, 2, 'mesa', i * 2); for (const d of [-1, 1]) ramps.push({ ...RAMP(0, d * (s + 2.5), 5, 2.5, i * 2, i * 2 + 2, d > 0 ? 'N' : 'S'), nat: 1 }); });
+  ramps.push({ ...RAMP(26.5, 0, 2.5, 5, 0, 2, 'W'), nat: 1 }, { ...RAMP(-26.5, 0, 2.5, 5, 0, 2, 'E'), nat: 1 });
+  pickups.push({ wi: 2, x: 0, y: 7.2, z: 0 });
+  // Landscape pieces. Each one only goes down where there is room, so a failed try just leaves open ground.
+  const mesa = (x, z) => {   // a flat-topped plateau with a sniper rifle on top, reached by up to two long ramps
+    const hx = between(9, 17), hz = between(8, 14), h = Math.round(between(4, 8) * 2) / 2, b = put(x, z, hx, hz, h, 'mesa', 0, 9); if (!b) return false;
+    const s0 = Math.floor(R() * 4); let n = 0;
+    for (let i = 0; i < 4 && n < 2; i++) if (lean(b, 'NSEW'[(s0 + i) % 4], h * 3.2, 3.5)) n++;
+    if (!n) { blocks.pop(); return false; }
+    pickups.push({ wi: np++ % 3, x: rd(b.x), y: rd(h + 1.2), z: rd(b.z) }); return true;
   };
-  [[-170, -110, 'trench', 0], [170, 110, 'trench', 0], [170, -110, 'pillars'], [-170, 110, 'pillars'], [-100, 0, 'tiers'], [100, 0, 'tiers'], [0, -115, 'yard'], [0, 115, 'yard'],
-   [-90, -120, 'yard'], [90, 120, 'yard'], [-240, 0, 'trench', 1], [240, 0, 'trench', 1]].forEach(([x, z, k, f]) => arena[k](x, z, f || 0));
-  for (let i = 0; i < 600; i++) {   // scattered cover: crates, pillars, trench walls and low platforms with a ramp
-    const x = between(-285, 285), z = between(-172, 172), k = R();
-    if (k < .45) { if (free(x, z, 2.5, 2.5, 3)) crate(x, z); }
-    else if (k < .7) { if (free(x, z, 1.5, 1.5, 3)) mid(x, z, 1.2, 1.2, between(6, 11), 'pillar'); }
-    else if (k < .9) { const f = R() < .5, len = between(5, 12); if (free(x, z, f ? 1 : len, f ? len : 1, 3)) mid(x, z, f ? .8 : len, f ? len : .8, between(2, 3.4), 'wall'); }
-    else if (free(x, z + 2, 6, 8, 3)) { mid(x, z, 5, 5, 1.6, 'platform'); ramps.push(RAMP(x, z + 7, 3, 2, 0, 1.6, 'N')); low.push({ x, z }); }
-  }
-  low.slice(0, 9).forEach((q, i) => pickups.push({ wi: i % 3, x: q.x, y: 2.8, z: q.z }));   // rifle, sniper and rocket in turn on the low platforms
+  const mound = (x, z) => {   // a low hill or dune you can run straight over
+    const f = R() < .5, a = between(8, 14), s = between(5, 9), h = between(1.4, 2.6), b = put(x, z, f ? s : a, f ? a : s, h, 'mound', 0, 5); if (!b) return false;
+    let n = 0; for (const side of f ? 'NS' : 'EW') if (lean(b, side, h * 3.4, s * .7)) n++;
+    if (!n) { blocks.pop(); return false; }
+    return true;
+  };
+  const outcrop = (x, z) => {   // a boulder, sometimes with another on top or beside it
+    const s = between(1.6, 3.6), h = between(1.8, 4.4), b = put(x, z, s, s * between(.7, 1.3), h, 'rock', 0, 3); if (!b) return;
+    if (s > 2.2 && R() < .5) add(b.x + between(-.6, .6), b.z + between(-.6, .6), b.hx * .55, b.hz * .55, h * .6, 'rock', h);
+    if (R() < .5) put(x + (R() < .5 ? -1 : 1) * (s + between(1, 2)), z + between(-2, 2), between(.8, 1.4), between(.8, 1.4), between(1, 2), 'rock', 0, .8);
+  };
+  const ridge = (x, z) => { const f = R() < .5, len = between(14, 34), t = between(1.6, 2.8); put(x, z, f ? t : len / 2, f ? len / 2 : t, between(4.5, 8.5), 'cliff', 0, 4); };
+  const canyon = (cx, cz) => {   // two cliff walls with gaps, a lane between them, and boulders to hide behind
+    const f = R() < .5, ax = f ? 12 : 27, az = f ? 27 : 12; if (keep(cx, cz, ax, az) || !inside(cx, cz, ax, az)) return;
+    for (const s of [-1, 1]) for (const [a, e] of [[-26, -10], [-6, 8], [12, 26]]) { const m = (a + e) / 2, hl = (e - a) / 2; put(f ? cx + s * 9 : cx + m, f ? cz + m : cz + s * 9, f ? 2.2 : hl, f ? hl : 2.2, between(5, 8.5), 'cliff', 0, 1); }
+    for (let i = 0; i < 4; i++) { const t = between(-20, 20), o = between(-4, 4); put(f ? cx + o : cx + t, f ? cz + t : cz + o, 1.2, 1.2, between(1.2, 2.2), 'rock', 0, 1.5); }
+  };
+  const crater = (cx, cz, r) => {   // a ring of rock with two gaps to get in by, and a few boulders inside
+    if (keep(cx, cz, r + 4, r + 4) || !inside(cx, cz, r + 4, r + 4) || !free(cx, cz, r + 3, r + 3, 2)) return;
+    const n = Math.round(Math.PI * 2 * r / 5.4), ph = R() * 6.283;
+    for (let i = 0; i < n; i++) { const a = i / n * 6.283; if (Math.cos(2 * a + ph) > .8) continue; add(cx + r * Math.cos(a), cz + r * Math.sin(a), 2.6, 2.6, between(1.8, 3.4), 'rock'); }
+    for (let i = 0; i < 3; i++) put(cx + between(-r * .5, r * .5), cz + between(-r * .5, r * .5), 1.2, 1.2, between(1, 1.8), 'rock', 0, 1.5);
+  };
+  const spire = (x, z, h) => put(x, z, 1.3, 1.3, h, 'spire', 0, 3.5);
+  const grove = (x, z) => { const [kind, hx, h0, h1, n] = c.tree; for (let i = 0; i < n; i++) put(x + between(-16, 16), z + between(-16, 16), hx, hx, between(h0, h1), kind, 0, 3.2); };
+  for (const [sx, sz] of [[-130, -60], [130, 60], [-130, 60], [130, -60]]) for (let t = 0; t < 40; t++) if (spire(sx + between(-30, 30), sz + between(-35, 35), 15)) break;   // the four tallest spires carry gun nests (added below)
+  if (c.flank) for (const s of [-1, 1]) for (const [a, e] of [[-150, -98], [-78, -22], [0, 58], [80, 150]]) put(s * 218 + between(-4, 4), (a + e) / 2, 3, (e - a) / 2, between(8, 11), 'cliff', 0, 1);   // valley walls
+  for (let i = 0, n = 0; n < c.mesas && i < 120; i++) if (mesa(between(-250, 250), between(-135, 135))) n++;
+  for (let i = 0; i < c.canyons; i++) canyon(between(-230, 230), between(-120, 120));
+  for (let i = 0; i < (c.craters || 0); i++) crater(between(-220, 220), between(-130, 130), between(16, 28));
+  for (let i = 0; i < c.groves; i++) grove(between(-270, 270), between(-270, 270));
+  for (let i = 0, n = 0; n < c.mounds && i < c.mounds * 8; i++) if (mound(between(-270, 270), between(-270, 270))) n++;
+  for (let i = 0; i < c.ridges; i++) ridge(between(-280, 280), between(-280, 280));
+  for (let i = 0; i < c.spires; i++) spire(between(-280, 280), between(-280, 280), Math.round(between(8, 13)));
+  for (let i = 0; i < c.rocks; i++) outcrop(between(-285, 285), between(-285, 285));
+  for (let i = 0; i < c.low; i++) put(between(-285, 285), between(-285, 285), between(.7, 1.5), between(.7, 1.5), between(.8, 1.5), 'rock', 0, 2);   // low boulders: cover you have to jump
+  for (let i = 0, n = 0; n < 2 && i < 80; i++) { const x = between(-120, 120), z = between(-100, 100); if (Math.hypot(x, z) > 40 && free(x, z, 3, 4, 4)) { vehicles.push({ x: rd(x), z: rd(z), yaw: rd(between(-3, 3)), type: 'car' }); n++; } }   // two spare cars in the field
   for (let t = 0; spawns.ffa.length < 20 && t < 3000; t++) { const x = rd(between(-280, 280)), z = rd(between(-165, 165)); if (free(x, z, 1, 1, 3) && spawns.ffa.every(s => Math.hypot(s.x - x, s.z - z) > 40)) spawns.ffa.push(at(x, 0, z)); }
-  return {
-    id: 'frontier', name: 'Twin Citadels', half: 300, theme: 'grass', sky: 0xc2e7ff, fog: [170, 720], sun: true, big: true, ceiling: 0, lights: [], tint: 0xdde5ec, accent: 0x7ec8ff, stars: false,
+  const m = {
+    id: c.id, name: c.name, half: 300, theme: c.theme, sky: c.sky, fog: [170, 720], sun: true, big: true, ceiling: 0, lights: [], tint: c.tint, accent: c.accent, stars: !!c.stars,
     ground: 0, bounds: { min: [-300, -2, -300], max: [300, 60, 300], edge: 'wall' }, killZones: [], blocks, ramps, bases, spawns, vehicles, pickups, turrets
   };
+  return c.rot ? rotateMap(m) : m;
 }
-MAPS.frontier = buildFrontier();
-for (const m of Object.values(MAPS)) {   // manned gun nests on top of the tallest pillars of every map
+for (const c of [
+  { id: 'field',    name: 'Emerald Valley',  theme: 'meadow', sky: 0xc2e7ff, tint: 0xe6edf3, accent: 0x7ec8ff, seed: 20261101, rot: 1, flank: true, mesas: 3, mounds: 14, canyons: 2, ridges: 6,  rocks: 90,  low: 130, groves: 16, tree: ['tree', .8, 7, 11, 8],  spires: 4 },
+  { id: 'glacier',  name: 'Glacier Run',     theme: 'ice',    sky: 0xe6f6ff, tint: 0xeaf4fb, accent: 0x6fd3ff, seed: 20261102, rot: 0,             mesas: 5, mounds: 12, canyons: 4, ridges: 12, rocks: 100, low: 130, groves: 9,  tree: ['pine', .7, 8, 12, 7],  spires: 8 },
+  { id: 'arena',    name: 'Sunbaked Canyons', theme: 'desert', sky: 0xffd27f, tint: 0xe3c196, accent: 0xff9a4d, seed: 20261103, rot: 1,             mesas: 8, mounds: 10, canyons: 6, ridges: 10, rocks: 110, low: 140, groves: 7,  tree: ['cactus', .6, 3, 5, 4], spires: 6 },
+  { id: 'station',  name: 'Moonrise Craters', theme: 'moon',   sky: 0x1f2d66, tint: 0xb4bdd6, accent: 0xb48cff, seed: 20261104, rot: 0, stars: true, mesas: 4, mounds: 6,  canyons: 3, ridges: 9,  rocks: 140, low: 160, groves: 0,  tree: ['tree', .8, 7, 11, 0],  spires: 6, craters: 7 },
+  { id: 'frontier', name: 'Twin Citadels',   theme: 'grass',  sky: 0xc2e7ff, tint: 0xdde5ec, accent: 0x7ec8ff, seed: 20261013, rot: 0,             mesas: 4, mounds: 10, canyons: 5, ridges: 8,  rocks: 110, low: 140, groves: 12, tree: ['tree', .8, 7, 11, 7],  spires: 6 }
+]) MAPS[c.id] = buildWild(c);
+for (const m of Object.values(MAPS)) {   // manned gun nests on top of the tallest rock spires (or pillars) of every map
   m.vehicles = m.vehicles || [];
-  const pil = m.blocks.filter(b => b.kind === 'pillar'), top = Math.max(0, ...pil.map(b => b.h));
+  const pil = m.blocks.filter(b => b.kind === 'pillar' || b.kind === 'spire'), top = Math.max(0, ...pil.map(b => b.h));
   if (top >= 7) for (const b of pil) if (b.h === top) m.vehicles.push({ x: b.x, z: b.z, yaw: 0, type: 'turret', y: (b.y || 0) + b.h });
 }
 const clientMap = m => { const { spawns, ...rest } = m; return rest; };   // players never need the spawn list
