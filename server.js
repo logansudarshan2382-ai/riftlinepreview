@@ -5,7 +5,7 @@
  *
  * Environment variables (all optional):
  *   MODE       tdm | ffa            lock one game mode (default: alternate every match)
- *   MAP        field | glacier | arena | station | frontier   lock one map (default: rotate through all of them)
+ *   MAP        field | glacier | arena | station | frontier   lock one map (default: every match picks a random map, never the same one twice in a row)
  *   ADMIN_KEY  any secret text      turns on /admin so you can load a map or mode on the spot (see below)
  *   TDM_LIMIT, FFA_LIMIT            kills needed to win
  *   ALLOWED_ORIGINS                 your website address(es), comma separated
@@ -50,7 +50,7 @@ const HP = 100, RESPAWN_MS = 3000, INTERMISSION_MS = 8000, SWITCH_MS = 350;
 const LIMIT = { tdm: Number(process.env.TDM_LIMIT) || 40, ffa: Number(process.env.FFA_LIMIT) || 50 };   // kills needed to win: a team deathmatch ends at 40 team kills, a free for all when one player reaches 50. Otherwise the 10 minute clock decides: most team kills, or the top killer
 const MATCH_MS = (Number(process.env.MATCH_MINUTES) || 10) * 60000;   // every match lasts 10 minutes at most
 const BODY = { r: .4, h: 1.8, eye: 1.62 };
-const VEH = { hx: 1.3, hz: 2.5, h: 1.6, maxSpeed: 22, maxReverse: 6, useRange: 1.8 };
+const VEH = { hx: 1.3, hz: 2.5, h: 1.6, maxSpeed: 22, maxReverse: 6, useRange: 1.8, gunRange: 3.6 };
 const VTYPES = {   // vehicle classes: footprint, height and speed limits (m/s). A ground car is fast and runs people over; the helicopter flies; the mech walks.
   car:  { hx: 1.3, hz: 2.5, h: 1.6, maxSpeed: 22, maxReverse: 6 },
   heli: { hx: 1.5, hz: 3.4, h: 2.6, maxSpeed: 20, maxReverse: 20 },
@@ -318,8 +318,8 @@ function buildWild(c) {
   ramps.push({ ...RAMP(26.5, 0, 2.5, 5, 0, 2, 'W'), nat: 1 }, { ...RAMP(-26.5, 0, 2.5, 5, 0, 2, 'E'), nat: 1 });
   pickups.push({ wi: 2, x: 0, y: 7.2, z: 0 });
   // Landscape pieces. Each one only goes down where there is room, so a failed try just leaves open ground.
-  const mesa = (x, z) => {   // a flat-topped plateau with a sniper rifle on top, reached by up to two long ramps
-    const hx = between(9, 17), hz = between(8, 14), h = Math.round(between(4, 8) * 2) / 2, b = put(x, z, hx, hz, h, 'mesa', 0, 9); if (!b) return false;
+  const mesa = (x, z, big) => {   // a flat-topped plateau with a sniper rifle on top, reached by up to two long ramps
+    const hx = big ? between(14, 24) : between(9, 17), hz = big ? between(12, 20) : between(8, 14), h = Math.round(between(4, 8) * 2) / 2, b = put(x, z, hx, hz, h, 'mesa', 0, 9); if (!b) return false;
     const s0 = Math.floor(R() * 4); let n = 0;
     for (let i = 0; i < 4 && n < 2; i++) if (lean(b, 'NSEW'[(s0 + i) % 4], h * 3.2, 3.5)) n++;
     if (!n) { blocks.pop(); return false; }
@@ -349,10 +349,22 @@ function buildWild(c) {
     for (let i = 0; i < 3; i++) put(cx + between(-r * .5, r * .5), cz + between(-r * .5, r * .5), 1.2, 1.2, between(1, 1.8), 'rock', 0, 1.5);
   };
   const spire = (x, z, h) => put(x, z, 1.3, 1.3, h, 'spire', 0, 3.5);
+  const diag = (x0, z0, x1, z1) => {   // a jagged ridge running corner to corner, with openings to get through
+    const n = Math.round(Math.hypot(x1 - x0, z1 - z0) / 9);
+    for (let i = 0; i <= n; i++) { if (i % 7 === 3 || i % 7 === 4) continue; const t = i / n; put(x0 + (x1 - x0) * t + between(-1.5, 1.5), z0 + (z1 - z0) * t + between(-1.5, 1.5), between(3.5, 5), between(3.5, 5), between(5, 9), 'cliff', 0, -2); }
+  };
+  const ruin = (x, z) => {   // four broken walls round an old courtyard, open at the corners, with a standing stone in the middle
+    const hl = between(5, 8), g = hl + 3, h = between(2.8, 4);
+    if (keep(x, z, g + 2, g + 2) || !inside(x, z, g + 2, g + 2) || !free(x, z, g + 1, g + 1, 2)) return;
+    add(x, z - g, hl, .9, h, 'cliff'); add(x, z + g, hl, .9, h * .8, 'cliff'); add(x - g, z, .9, hl, h * .9, 'cliff'); add(x + g, z, .9, hl, h * 1.1, 'cliff'); add(x, z, 1.4, 1.4, h * 1.4, 'rock');
+  };
   const grove = (x, z) => { const [kind, hx, h0, h1, n] = c.tree; for (let i = 0; i < n; i++) put(x + between(-16, 16), z + between(-16, 16), hx, hx, between(h0, h1), kind, 0, 3.2); };
   for (const [sx, sz] of [[-130, -60], [130, 60], [-130, 60], [130, -60]]) for (let t = 0; t < 40; t++) if (spire(sx + between(-30, 30), sz + between(-35, 35), 15)) break;   // the four tallest spires carry gun nests (added below)
-  if (c.flank) for (const s of [-1, 1]) for (const [a, e] of [[-150, -98], [-78, -22], [0, 58], [80, 150]]) put(s * 218 + between(-4, 4), (a + e) / 2, 3, (e - a) / 2, between(8, 11), 'cliff', 0, 1);   // valley walls
+  if (c.valley) for (const s of [-1, 1]) for (const [a, e] of [[-290, -222], [-198, -134], [-110, -52], [-28, 38], [62, 126], [150, 214], [238, 290]]) put(s * 114 + between(-5, 5), (a + e) / 2, between(4, 6), (e - a) / 2, between(15, 21), 'cliff', 0, 1);   // sheer valley walls along both sides, with passes through
+  if (c.diag) { diag(-215, -135, 215, 135); diag(-215, 135, 215, -135); }   // two ice ridges crossing in the middle
+  if (c.grid) for (const gx of [-250, -150, -50, 50, 150, 250]) for (const gz of [-130, -45, 45, 130]) mesa(gx + between(-12, 12), gz + between(-8, 8), true);   // canyon country: a grid of big mesas with lanes between them
   for (let i = 0, n = 0; n < c.mesas && i < 120; i++) if (mesa(between(-250, 250), between(-135, 135))) n++;
+  for (let i = 0; i < (c.ruins || 0); i++) ruin(between(-250, 250), between(-140, 140));
   for (let i = 0; i < c.canyons; i++) canyon(between(-230, 230), between(-120, 120));
   for (let i = 0; i < (c.craters || 0); i++) crater(between(-220, 220), between(-130, 130), between(16, 28));
   for (let i = 0; i < c.groves; i++) grove(between(-270, 270), between(-270, 270));
@@ -364,17 +376,17 @@ function buildWild(c) {
   for (let i = 0, n = 0; n < 2 && i < 80; i++) { const x = between(-120, 120), z = between(-100, 100); if (Math.hypot(x, z) > 40 && free(x, z, 3, 4, 4)) { vehicles.push({ x: rd(x), z: rd(z), yaw: rd(between(-3, 3)), type: 'car' }); n++; } }   // two spare cars in the field
   for (let t = 0; spawns.ffa.length < 20 && t < 3000; t++) { const x = rd(between(-280, 280)), z = rd(between(-165, 165)); if (free(x, z, 1, 1, 3) && spawns.ffa.every(s => Math.hypot(s.x - x, s.z - z) > 40)) spawns.ffa.push(at(x, 0, z)); }
   const m = {
-    id: c.id, name: c.name, half: 300, theme: c.theme, sky: c.sky, fog: [170, 720], sun: true, big: true, ceiling: 0, lights: [], tint: c.tint, accent: c.accent, stars: !!c.stars,
+    id: c.id, name: c.name, half: 300, theme: c.theme, sky: c.sky, fog: c.fog || [170, 720], sun: true, big: true, ceiling: 0, lights: [], tint: c.tint, accent: c.accent, stars: !!c.stars,
     ground: 0, bounds: { min: [-300, -2, -300], max: [300, 60, 300], edge: 'wall' }, killZones: [], blocks, ramps, bases, spawns, vehicles, pickups, turrets
   };
   return c.rot ? rotateMap(m) : m;
 }
-for (const c of [
-  { id: 'field',    name: 'Emerald Valley',  theme: 'meadow', sky: 0xc2e7ff, tint: 0xe6edf3, accent: 0x7ec8ff, seed: 20261101, rot: 1, flank: true, mesas: 3, mounds: 14, canyons: 2, ridges: 6,  rocks: 90,  low: 130, groves: 16, tree: ['tree', .8, 7, 11, 8],  spires: 4 },
-  { id: 'glacier',  name: 'Glacier Run',     theme: 'ice',    sky: 0xe6f6ff, tint: 0xeaf4fb, accent: 0x6fd3ff, seed: 20261102, rot: 0,             mesas: 5, mounds: 12, canyons: 4, ridges: 12, rocks: 100, low: 130, groves: 9,  tree: ['pine', .7, 8, 12, 7],  spires: 8 },
-  { id: 'arena',    name: 'Sunbaked Canyons', theme: 'desert', sky: 0xffd27f, tint: 0xe3c196, accent: 0xff9a4d, seed: 20261103, rot: 1,             mesas: 8, mounds: 10, canyons: 6, ridges: 10, rocks: 110, low: 140, groves: 7,  tree: ['cactus', .6, 3, 5, 4], spires: 6 },
-  { id: 'station',  name: 'Moonrise Craters', theme: 'moon',   sky: 0x1f2d66, tint: 0xb4bdd6, accent: 0xb48cff, seed: 20261104, rot: 0, stars: true, mesas: 4, mounds: 6,  canyons: 3, ridges: 9,  rocks: 140, low: 160, groves: 0,  tree: ['tree', .8, 7, 11, 0],  spires: 6, craters: 7 },
-  { id: 'frontier', name: 'Twin Citadels',   theme: 'grass',  sky: 0xc2e7ff, tint: 0xdde5ec, accent: 0x7ec8ff, seed: 20261013, rot: 0,             mesas: 4, mounds: 10, canyons: 5, ridges: 8,  rocks: 110, low: 140, groves: 12, tree: ['tree', .8, 7, 11, 7],  spires: 6 }
+for (const c of [   // five very different places: a misty forest valley, a frozen crossing, canyon country, a cratered moonscape, and open grassland with ruins
+  { id: 'field',    name: 'Emerald Valley',   theme: 'forest', sky: 0xbfe0d2, tint: 0xd9e4de, accent: 0x7ee8a8, fog: [70, 420], seed: 20261101, rot: 1, valley: true, mesas: 0, mounds: 6,  canyons: 0, ridges: 4, rocks: 70,  low: 120, groves: 26, tree: ['tree', .9, 10, 15, 9], spires: 3 },
+  { id: 'glacier',  name: 'Glacier Run',      theme: 'ice',    sky: 0xe6f6ff, tint: 0xeaf4fb, accent: 0x6fd3ff, seed: 20261102, rot: 0, diag: true,   mesas: 4, mounds: 8,  canyons: 0, ridges: 5, rocks: 90,  low: 120, groves: 8,  tree: ['pine', .7, 9, 13, 7],   spires: 9 },
+  { id: 'arena',    name: 'Sunbaked Canyons', theme: 'desert', sky: 0xffd27f, tint: 0xe3c196, accent: 0xff9a4d, seed: 20261103, rot: 1, grid: true,   mesas: 0, mounds: 12, canyons: 3, ridges: 3, rocks: 80,  low: 130, groves: 6,  tree: ['cactus', .6, 3, 5, 3], spires: 4 },
+  { id: 'station',  name: 'Moonrise Craters', theme: 'moon',   sky: 0x1f2d66, tint: 0xb4bdd6, accent: 0xb48cff, seed: 20261104, rot: 0, stars: true, mesas: 4, mounds: 6,  canyons: 3, ridges: 9, rocks: 140, low: 160, groves: 0,  tree: ['tree', .8, 7, 11, 0],   spires: 6, craters: 9 },
+  { id: 'frontier', name: 'Twin Citadels',    theme: 'grass',  sky: 0xc2e7ff, tint: 0xdde5ec, accent: 0x7ec8ff, seed: 20261013, rot: 0,              mesas: 2, mounds: 22, canyons: 0, ridges: 3, rocks: 60,  low: 110, groves: 4,  tree: ['tree', .8, 7, 10, 5],   spires: 4, ruins: 9 }
 ]) MAPS[c.id] = buildWild(c);
 for (const m of Object.values(MAPS)) {   // manned gun nests on top of the tallest rock spires (or pillars) of every map
   m.vehicles = m.vehicles || [];
@@ -485,7 +497,7 @@ function pickSpawn(p) {
 
 function respawn(p) {
   const sp = pickSpawn(p), loadout = loadoutOf(p);
-  Object.assign(p, { x: sp.x, y: sp.y, z: sp.z, yaw: sp.yaw, pitch: 0, hp: maxHp(p), alive: true, loadout, wi: loadout[0], burnUntil: 0, ammos: WEAPONS.map(w => w.magazineSize), reserve: WEAPONS.map(w => w.maxAmmo), held: new Set(), reloadEnd: 0, nextShot: 0, vehicle: 0, epoch: p.epoch + 1, hist: [] });
+  Object.assign(p, { x: sp.x, y: sp.y, z: sp.z, yaw: sp.yaw, pitch: 0, hp: maxHp(p), alive: true, loadout, wi: loadout[0], burnUntil: 0, ammos: WEAPONS.map(w => w.magazineSize), reserve: WEAPONS.map(w => w.maxAmmo), held: new Set(), reloadEnd: 0, nextShot: 0, vehicle: 0, epoch: p.epoch + 1, hist: [], vis: null, mem: null, hitBy: null });
   p.sock.emit('respawn', { x: sp.x, y: sp.y, z: sp.z, yaw: sp.yaw, hp: p.hp, maxHp: maxHp(p), ammos: p.ammos, reserve: p.reserve, wi: p.wi, e: p.epoch });   // e: old position updates still in flight are ignored
 }
 
@@ -597,6 +609,7 @@ function leaveVehicle(p, notify) {
 
 function hurt(shooter, target, dmg, head, how) {
   target.hp -= dmg;
+  if (target.bot && shooter && shooter !== target) { target.hitBy = shooter; target.hitAt = Date.now(); }   // a bot that is shot knows which way it came from (a damage marker, not a sound)
   const dead = target.hp <= 0;
   shooter.sock.emit('hit', { kill: dead, head: !!head });
   if (!dead) { emitYou(target); return; }
@@ -605,6 +618,7 @@ function hurt(shooter, target, dmg, head, how) {
   dropWeapon(target);   // the weapon they held floats where they fell
   if (match.mode === 'tdm') match.team[shooter.faction]++;
   grant(shooter, XP_PER_KILL, COINS_PER_KILL, 'kill');
+  match.hot = { x: target.x, z: target.z, t: Date.now() };   // where the last fight was, for bots with nothing in sight
   emitYou(target);
   emit('kill', { k: shooter.id, v: target.id, kn: shooter.name, vn: target.name, kf: shooter.faction, vf: target.faction, kl: lvOf(shooter), vl: lvOf(target), hs: !!head, how: how || '', r: RESPAWN_MS });
   sendScores();
@@ -656,7 +670,7 @@ function validateMap(m) {
 }
 
 // ---- matches and maps ----
-const nextMapId = () => MAP_ENV !== 'rotate' ? MAP_ENV : MAP_IDS[(MAP_IDS.indexOf(map.id) + 1) % MAP_IDS.length];
+const nextMapId = () => MAP_ENV !== 'rotate' ? MAP_ENV : randOf(MAP_IDS.filter(id => id !== map.id));   // a random map each time, never the one just played
 
 function endMatch(winner, wf, winners) {
   if (match.state !== 'live') return;
@@ -845,18 +859,28 @@ function boardBot(p, v, now) {
   if (v.type === 'turret') { p.x = v.x; p.z = v.z; p.y = v.sy; } else if (!gun) { v.speed = 0; v.dirty = true; }
   emit('vehicles', vehRows());
 }
+// What a bot can see. Only sight counts, never hearing: an enemy has to be inside the bot's view range, inside the cone the bot is facing, and not hidden behind a wall.
+// Behind and to the sides is blind. Better bots see further and a little wider. A target already being tracked is kept while it stays in view, even if the bot is still turning to face it.
+function botSees(p, q, eye, facing, skill, tracked) {
+  const dx = q.x - eye.x, dy = q.y + 1.2 - eye.y, dz = q.z - eye.z, d = Math.hypot(dx, dy, dz) || 1;
+  if (d > 60 + 90 * skill) return false;
+  if (Math.abs(wrap(Math.atan2(-dx, -dz) - facing)) > (tracked ? 1.9 : .9 + .45 * skill)) return false;
+  const look = cast(p, eye, { x: dx / d, y: dy / d, z: dz / d }, d);
+  return look.who === q || look.t >= d - 1;
+}
+const roamGoal = () => match.hot && Date.now() - match.hot.t < 25000 && Math.random() < .45 ? { x: match.hot.x + (Math.random() - .5) * 30, z: match.hot.z + (Math.random() - .5) * 30 } : Math.random() < .3 ? { x: 0, z: 0 } : randOf(map.spawns.ffa);   // with nothing in sight: head for where a fight was just seen in the kill feed, the middle, or a spawn area
 function botGun(p, v, now) {   // on a pillar gun or a car's roof gun: swing at the nearest enemy it can see and fire in bursts
   const w = VWEAPONS[p.seat ? 'cargun' : 'turret'], o = { x: v.x, y: (v.y || 0) + (p.seat ? 2.4 : 1.3), z: v.z }, skill = p.skill ?? (p.skill = botSkill(p.lv));
   let tgt = null, best = w.range;
   for (const q of players.values()) {
     if (q === p || !q.alive || q.vehicle === p.vehicle || (match.mode === 'tdm' && q.faction === p.faction)) continue;
     const d = Math.hypot(q.x - o.x, q.y + 1.2 - o.y, q.z - o.z); if (d >= best) continue;
-    const look = cast(p, o, { x: (q.x - o.x) / d, y: (q.y + 1.2 - o.y) / d, z: (q.z - o.z) / d }, d); if (look.who === q || look.t >= d - 1) { best = d; tgt = q; }   // only targets it can see
+    if (botSees(p, q, o, p.yaw, skill, q === p.gunTgt)) { best = d; tgt = q; }   // only targets in the gun's field of view with a clear line
   }
   if (tgt) p.lastSeen = now;
   if (now - (p.lastSeen || p.drove) > 9000 || now - p.drove > 70000) { leaveVehicle(p, true); p.boardAt = now + 8000; p.seekAt = now + 15000; return; }
   if (!p.seat) { p.x = v.x; p.z = v.z; p.y = v.sy; }
-  if (!tgt) return;
+  if (!tgt) { p.yaw = r3(wrap(p.yaw + .03)); if (!p.seat) { v.yaw = p.yaw; v.dirty = true; } return; }   // nothing in view: the gun slowly sweeps round looking
   const dx = tgt.x - o.x, dy = tgt.y + 1.2 - o.y, dz = tgt.z - o.z, want = Math.atan2(-dx, -dz); p.yaw = r3(want); p.pitch = r3(clamp(Math.atan2(dy, Math.hypot(dx, dz)), -1.2, 1.2));
   if (!p.seat) { v.yaw = r3(wrap(v.yaw + clamp(wrap(want - v.yaw), -.12 - skill * .08, .12 + skill * .08))); v.dirty = true; if (Math.abs(wrap(want - v.yaw)) > .15) return; }
   if (p.gunTgt !== tgt) { p.gunTgt = tgt; p.nextShot = Math.max(p.nextShot, now + 500 - 350 * skill + Math.random() * 300); }   // a moment to react to a new target
@@ -891,15 +915,18 @@ function botTick(now) {
       if (v) { boardBot(p, v, now); continue; }
     }
     const skill = p.skill ?? (p.skill = botSkill(p.lv)), turnR = BOT.turn * (.4 + .7 * skill);
-    let tgt = null, best = Infinity;
-    for (const q of players.values()) {
-      if (q === p || !q.alive || (match.mode === 'tdm' && q.faction === p.faction)) continue;
-      const d = Math.hypot(q.x - p.x, q.y - p.y, q.z - p.z); if (d < best) { best = d; tgt = q; }
+    if (now > (p.percAt || 0)) {   // a bot looks about five times a second, and only notices what it can actually see: in range, in front of it, with nothing in the way
+      p.percAt = now + 160 + Math.random() * 100; const eye = { x: p.x, y: p.y + BODY.eye, z: p.z }; let seen = null, sd = Infinity;
+      for (const q of players.values()) { if (q === p || !q.alive || (match.mode === 'tdm' && q.faction === p.faction)) continue; const d = Math.hypot(q.x - p.x, q.y - p.y, q.z - p.z); if (d < sd && botSees(p, q, eye, p.yaw, skill, q === p.vis)) { sd = d; seen = q; } }
+      p.vis = seen; if (seen) p.mem = { x: seen.x, z: seen.z, until: now + 2500 + 3500 * skill };   // it remembers where it last saw someone for a few seconds
+      if (!seen && p.hitBy && p.hitBy.alive && p.hitDone !== p.hitAt && now - p.hitAt < 800) { p.hitDone = p.hitAt; p.mem = { x: p.hitBy.x, z: p.hitBy.z, until: now + 3500 }; }   // shot from out of sight: it turns toward where the hit came from, like a damage marker
     }
+    let tgt = p.vis && p.vis.alive ? p.vis : null, best = tgt ? Math.hypot(tgt.x - p.x, tgt.y - p.y, tgt.z - p.z) : Infinity;
+    if (!tgt && p.mem && now < p.mem.until) { p.goal = { x: p.mem.x, z: p.mem.z }; p.goalAt = now + 600; if (Math.hypot(p.mem.x - p.x, p.mem.z - p.z) < 3) p.mem = null; }   // go and look where it last saw someone
     if (tgt !== p.lastTgt) { p.lastTgt = tgt; p.reactAt = now + (900 - 700 * skill) + Math.random() * 400; }   // a new target takes a moment to notice: slower for weaker bots
     if (tgt && now > (p.wsAt || 0) && !p.reloadEnd) { p.wsAt = now + 1200; const ok = i => p.ammos[i] > 0 || p.reserve[i] > 0; let pick = p.wi, bs = -1e9; for (const i of new Set([...p.loadout, ...p.held])) { if (!ok(i)) continue; const w1 = WEAPONS[i], sc = -Math.abs(best - w1.range * .4) - (w1.splash && best < 8 ? 60 : 0); if (sc > bs) { bs = sc; pick = i; } } if (pick !== p.wi) p.wi = pick; }   // each weapon has a distance it likes   // sniper at range, rockets mid range, rifle up close
     if (!p.goalVeh && now > (p.seekAt || 0)) { p.seekAt = now + 4000; if ((!tgt || best > 30) && Math.random() < .2 + skill * .4) { const v = botPickVehicle(p); if (v) { p.goalVeh = v.id; p.goalVehAt = now + 30000; } } }   // fancy a ride or a gun?
-    if (!tgt && (!p.goal || now > p.goalAt || Math.hypot(p.goal.x - p.x, p.goal.z - p.z) < 3)) { p.goal = Math.random() < .3 ? { x: 0, z: 0 } : randOf(map.spawns.ffa); p.goalAt = now + 8000; }
+    if (!tgt && (!p.goal || now > p.goalAt || Math.hypot(p.goal.x - p.x, p.goal.z - p.z) < 3)) { p.goal = roamGoal(); p.goalAt = now + 8000; }
     const gv = p.goalVeh ? vehicles.find(v => v.id === p.goalVeh && botCanUse(p, v)) : null; if (p.goalVeh && (!gv || now > p.goalVehAt)) p.goalVeh = 0;
     const toVeh = !!gv && (!tgt || best > 22), hold = !!tgt && !toVeh;   // heading for a ride, or hunting
     const gx = toVeh ? gv.x : tgt ? tgt.x : p.goal.x, gy = hold ? tgt.y + 1.2 + .38 * clamp((skill - .75) / .2, 0, 1) : p.y + BODY.eye, gz = toVeh ? gv.z : tgt ? tgt.z : p.goal.z;
@@ -1051,11 +1078,19 @@ function vehBlocked(v, x, z) {   // a ground vehicle or mech cannot drive throug
 function botDrive(p, now, dt) {
   const v = vehicles.find(x => x.id === p.vehicle); if (!v) { p.vehicle = 0; return; }
   if (v.type === 'turret' || p.seat) { botGun(p, v, now); return; }
-  let tgt = null, best = Infinity;
-  for (const q of players.values()) { if (q === p || !q.alive || q.vehicle === p.vehicle || (match.mode === 'tdm' && q.faction === p.faction)) continue; const d = Math.hypot(q.x - v.x, q.z - v.z); if (d < best) { best = d; tgt = q; } }
-  if (!tgt || now - p.drove > 45000 || p.stuck > 40) { leaveVehicle(p, true); p.stuck = 0; p.boardAt = now + 8000; p.seekAt = now + 15000; return; }   // nobody left to hunt, or stuck: get out
-  const dx = tgt.x - v.x, dz = tgt.z - v.z, flat = Math.hypot(dx, dz) || 1, want = Math.atan2(-dx, -dz), T = vd(v), w = VWEAPONS[v.type];
-  const [rx, rz] = v.type === 'heli' ? [tgt.x, tgt.z] : routeStep(p.rt2 || (p.rt2 = {}), navFor(map, true), v.x, v.z, tgt.x, tgt.z, now), mvWant = Math.atan2(-(rx - v.x), -(rz - v.z));   // ground vehicles follow the memorised route
+  const skill = p.skill ?? (p.skill = botSkill(p.lv));
+  if (now > (p.percAt || 0)) {   // looking out of the windscreen: the same range, view cone and line of sight as on foot, along the way the vehicle faces
+    p.percAt = now + 160 + Math.random() * 100; const eye = { x: v.x, y: (v.y || 0) + 1.6, z: v.z }; let seen = null, sd = Infinity;
+    for (const q of players.values()) { if (q === p || !q.alive || q.vehicle === p.vehicle || (match.mode === 'tdm' && q.faction === p.faction)) continue; const d = Math.hypot(q.x - v.x, q.z - v.z); if (d < sd && botSees(p, q, eye, v.yaw, skill, q === p.vis)) { sd = d; seen = q; } }
+    p.vis = seen; if (seen) { p.lastSeen = now; p.mem = { x: seen.x, z: seen.z, until: now + 3000 + 3000 * skill }; }
+  }
+  const tgt = p.vis && p.vis.alive ? p.vis : null;
+  if (now - (p.lastSeen || p.drove) > 14000 || now - p.drove > 60000 || p.stuck > 40) { leaveVehicle(p, true); p.stuck = 0; p.boardAt = now + 8000; p.seekAt = now + 15000; return; }   // nothing seen for a while, or stuck: get out
+  if (!p.vgoal || now > p.vgoalAt) { p.vgoal = roamGoal(); p.vgoalAt = now + 9000; }
+  const aim = tgt || (p.mem && now < p.mem.until ? p.mem : p.vgoal);   // what it can see, else where it last saw someone, else a place to look
+  const dx = aim.x - v.x, dz = aim.z - v.z, flat = Math.hypot(dx, dz) || 1, want = Math.atan2(-dx, -dz), T = vd(v), w = VWEAPONS[v.type];
+  if (!tgt && flat < 12) p.vgoalAt = 0;
+  const [rx, rz] = v.type === 'heli' ? [aim.x, aim.z] : routeStep(p.rt2 || (p.rt2 = {}), navFor(map, true), v.x, v.z, aim.x, aim.z, now), mvWant = Math.atan2(-(rx - v.x), -(rz - v.z));   // ground vehicles follow the memorised route
   v.yaw = r3(wrap(v.yaw + clamp(wrap(mvWant - v.yaw), -.08, .08)));
   const sp = (v.type === 'car' ? 18 : v.type === 'tank' ? (flat < 30 ? 0 : 7.5) : v.type === 'heli' ? (flat < 70 ? 0 : 14) : (flat < 40 ? 0 : 4.2)) * (v.type === 'heli' ? 1 : clamp(1.15 - Math.abs(wrap(mvWant - v.yaw)), .2, 1));   // slow down to turn corners
   const nx = v.x - Math.sin(v.yaw) * sp * dt, nz = v.z - Math.cos(v.yaw) * sp * dt;
@@ -1063,7 +1098,7 @@ function botDrive(p, now, dt) {
   if (v.type === 'heli') v.y = Math.min(22, (v.y || 0) + 6 * dt);
   const lim = map.half - T.hx; v.x = r2(clamp(v.x, -lim, lim)); v.z = r2(clamp(v.z, -lim, lim)); v.speed = sp; v.dirty = true;
   p.x = v.x; p.y = v.y || 0; p.z = v.z; p.yaw = v.yaw;
-  if (!w || flat > w.range * .9 || Math.abs(wrap(want - v.yaw)) > .25 || now < p.nextShot || (v.type === 'heli' && v.y < 15)) return;
+  if (!tgt || !w || flat > w.range * .9 || Math.abs(wrap(want - v.yaw)) > .25 || now < p.nextShot || (v.type === 'heli' && v.y < 15)) return;
   const side = v.type === 'mech' ? (now / 45 & 1 ? 1 : -1) * 1.1 : 0, c = Math.cos(v.yaw), s = Math.sin(v.yaw);
   const o = { x: v.x - s * 2.2 + c * side, y: (v.y || 0) + (v.type === 'mech' ? 4.2 : v.type === 'tank' ? 2 : 1.2), z: v.z - c * 2.2 - s * side }, dy = tgt.y + 1.2 - o.y, dist = Math.hypot(dx, dy, dz) || 1;
   if (!heatOk(v, w, now)) return;
@@ -1088,7 +1123,7 @@ function inRoom(room, fn) {   // run fn with the shared variables pointing at th
 function createRoom() {
   const room = { id: 'Server-' + REGION + '-' + (++roomSeq), players: new Map(), match: { mode: 'tdm', state: 'live', team: { vanguard: 0, horizon: 0 } }, map: MAPS.field, vehicles: [], tick: 0, nextTimer: null, spawnHeld: new Map(), pickups: [], turrets: [], emptySince: 0 };
   rooms.set(room.id, room);
-  inRoom(room, () => startMatch(MODE === 'rotate' ? 'tdm' : MODE, MAP_ENV === 'rotate' ? 'frontier' : MAP_ENV));   // new rooms open on Twin Citadels, then the maps rotate
+  inRoom(room, () => startMatch(MODE === 'rotate' ? 'tdm' : MODE, MAP_ENV === 'rotate' ? randOf(MAP_IDS) : MAP_ENV));   // a new room opens on a random map, and every match after it picks another at random
   console.log('opened ' + room.id + ' (' + room.match.mode + ' on ' + room.map.id + '), ' + rooms.size + ' rooms');
   return room;
 }
@@ -1172,11 +1207,11 @@ function connect(socket, room) {
     me.useAt = now;
     if (me.vehicle) { leaveVehicle(me, true); return; }
     if (takePickup(me, now)) return;   // a weapon within reach comes before a vehicle
-    let best = null, bd = VEH.useRange, gun = false;
+    let best = null, bd = 99, gun = false;
     for (const v of vehicles) {   // a free seat, a pillar gun, or the roof gun of a friendly car that already has a driver
       const open = !v.driver, roof = v.type === 'car' && v.driver && !v.gunner && (match.mode !== 'tdm' || v.driver.faction === me.faction);
       if (!(open || roof) || (v.type !== 'turret' && Math.abs((v.y || 0) - me.y) > 3) || (v.team && match.mode === 'tdm' && v.team !== me.faction)) continue;   // an enemy base's sentry is not yours to man
-      const d = distToVehicle(v, me.x, me.z); if (d <= bd) { best = v; bd = d; gun = !open; }
+      const d = distToVehicle(v, me.x, me.z); if (d <= (open ? VEH.useRange : VEH.gunRange) && d < bd) { best = v; bd = d; gun = !open; }   // the roof seat of a moving car can be taken from a bit further away
     }
     if (!best) return;
     if (gun) { best.gunner = me; me.seat = 'g'; } else best.driver = me;
