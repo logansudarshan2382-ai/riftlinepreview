@@ -47,8 +47,8 @@ const MODE = ['tdm', 'ffa'].includes(process.env.MODE) ? process.env.MODE : 'rot
 const TICK_HZ = 20, MAX_PLAYERS = 16;
 const REGION = (process.env.REGION || 'US').toUpperCase().replace(/[^A-Z]/g, '').slice(0, 4) || 'US', MAX_ROOMS = Number(process.env.MAX_ROOMS) || 50, ROOM_IDLE_MS = 60000;   // REGION names the rooms (Server-EU-2); MAX_ROOMS caps one process
 const HP = 100, RESPAWN_MS = 3000, INTERMISSION_MS = 8000, SWITCH_MS = 350;
-const LIMIT = { tdm: Number(process.env.TDM_LIMIT) || 100, ffa: Number(process.env.FFA_LIMIT) || 50 };   // kills needed to win (high, so the clock normally ends the match)
-const MATCH_MS = (Number(process.env.MATCH_MINUTES) || 10) * 60000;   // every match lasts 10 minutes
+const LIMIT = { tdm: Number(process.env.TDM_LIMIT) || 40, ffa: Number(process.env.FFA_LIMIT) || 50 };   // kills needed to win: a team deathmatch ends at 40 team kills, a free for all when one player reaches 50. Otherwise the 10 minute clock decides: most team kills, or the top killer
+const MATCH_MS = (Number(process.env.MATCH_MINUTES) || 10) * 60000;   // every match lasts 10 minutes at most
 const BODY = { r: .4, h: 1.8, eye: 1.62 };
 const VEH = { hx: 1.3, hz: 2.5, h: 1.6, maxSpeed: 22, maxReverse: 6, useRange: 1.8 };
 const VTYPES = {   // vehicle classes: footprint, height and speed limits (m/s). A ground car is fast and runs people over; the helicopter flies; the mech walks.
@@ -163,7 +163,7 @@ const BASE_WEAPONS = [   // damage per bullet, delay between shots (ms), magazin
   // Per player, currentMagazine is p.ammos[i] and currentAmmo (the spare rounds) is p.reserve[i]. `splash` = explosion radius (m) and damage at its centre.
   { name: 'Assault rifle',   short: 'RIFLE',  damage: 7,   headshotMultiplier: 1.5, fireRateDelay: 70,   magazineSize: 250, maxAmmo: 750, reloadTime: 1.4, range: 60,  unlockLevel: 1,  auto: true,  len: 1 },
   { name: 'Sniper rifle',    short: 'SNIPER', damage: 50,  headshotMultiplier: 2,   fireRateDelay: 450,  magazineSize: 5,   maxAmmo: 20,  reloadTime: 4.5, range: 400, unlockLevel: 5,  auto: false, len: 1.5 },
-  { name: 'Rocket launcher', short: 'ROCKET', damage: 100, headshotMultiplier: 1,   fireRateDelay: 1800, magazineSize: 1,   maxAmmo: 6,   reloadTime: 5,   range: 250, unlockLevel: 10, auto: false, len: 1.4, splash: { radius: 7, damage: 90 } }
+  { name: 'Rocket launcher', short: 'ROCKET', damage: 85, headshotMultiplier: 1,   fireRateDelay: 1800, magazineSize: 1,   maxAmmo: 6,   reloadTime: 5,   range: 250, unlockLevel: 10, auto: false, len: 1.4, splash: { radius: 7, damage: 70 } }
 ];
 
 // ---- the armoury: the three originals above plus 50 more. Extra properties: pellets (rays per shot), spread (inaccuracy), falloff [full-damage range, zero range, minimum multiplier], pierce (extra targets a shot passes through),
@@ -193,7 +193,7 @@ const ROWS = [   // name, short, class, unlock level, damage, delay ms, magazine
   ['Sawed-off', 'SAWED', 'Shotgun', 15, 8, 600, 2, 24, 2.2, 18, { pellets: 10, spread: .12, falloff: [4, 18, .1] }],
   ['Slug gun', 'SLUG', 'Shotgun', 17, 60, 1000, 5, 30, 3, 70, { headshotMultiplier: 1.5 }],
   ['Combat shotgun', 'COMBAT', 'Shotgun', 21, 6, 380, 8, 48, 3, 28, { auto: true, pellets: 6, spread: .07, falloff: [6, 28, .15] }],
-  ['Flak cannon', 'FLAK', 'Shotgun', 28, 7, 1100, 4, 24, 3.2, 40, { pellets: 6, spread: .06, splash: { radius: 3, damage: 25 } }],
+  ['Flak cannon', 'FLAK', 'Shotgun', 28, 7, 1100, 4, 24, 3.2, 40, { pellets: 6, spread: .06, splash: { radius: 3, damage: 12 } }],
   ['Scatter blaster', 'SCATTER', 'Shotgun', 33, 5, 700, 6, 36, 2.6, 22, { pellets: 14, spread: .15, falloff: [3, 22, .08] }],
   ['Light machine gun', 'LMG', 'LMG', 12, 8, 85, 100, 400, 4, 70, { auto: true, spread: .02, moveMult: .9 }],
   ['Squad gun', 'SQUAD', 'LMG', 19, 10, 100, 60, 240, 4.2, 75, { auto: true, spread: .015, moveMult: .9 }],
@@ -204,12 +204,12 @@ const ROWS = [   // name, short, class, unlock level, damage, delay ms, magazine
   ['Bolt sniper', 'BOLT', 'Marksman', 16, 90, 1200, 4, 20, 4, 450, { zoom: 14, headshotMultiplier: 2 }],
   ['Ghost sniper', 'GHOST', 'Marksman', 22, 55, 650, 6, 30, 3.2, 350, { zoom: 18, headshotMultiplier: 2 }],
   ['Anti-materiel rifle', 'AMR', 'Marksman', 36, 120, 1800, 3, 12, 5, 500, { zoom: 12, pierce: 2, moveMult: .85, headshotMultiplier: 1.8 }],
-  ['Rail rifle', 'RAIL', 'Marksman', 40, 70, 1000, 6, 24, 3.5, 400, { zoom: 16, pierce: 3 }],
+  ['Rail rifle', 'RAIL', 'Marksman', 40, 70, 1000, 6, 24, 3.5, 400, { zoom: 16, pierce: 3, headshotMultiplier: 1.3 }],
   ['Grenade launcher', 'GRENADE', 'Launcher', 14, 45, 1200, 6, 24, 3.2, 120, { splash: { radius: 5, damage: 80 }, headshotMultiplier: 1 }],
   ['Mini-rocket pod', 'PODS', 'Launcher', 23, 20, 350, 8, 32, 3.5, 150, { splash: { radius: 3, damage: 40 }, headshotMultiplier: 1 }],
   ['Napalm launcher', 'NAPALM', 'Launcher', 29, 30, 1600, 3, 12, 4, 110, { splash: { radius: 6, damage: 40 }, burn: { dps: 10, secs: 4 }, headshotMultiplier: 1 }],
-  ['Mortar', 'MORTAR', 'Launcher', 34, 60, 2500, 1, 8, 5, 200, { splash: { radius: 9, damage: 100 }, headshotMultiplier: 1, moveMult: .9 }],
-  ['Cluster launcher', 'CLUSTER', 'Launcher', 41, 40, 2000, 2, 10, 4, 160, { pellets: 3, spread: .06, splash: { radius: 6, damage: 60 }, headshotMultiplier: 1 }],
+  ['Mortar', 'MORTAR', 'Launcher', 34, 60, 2500, 1, 8, 5, 200, { splash: { radius: 9, damage: 85 }, headshotMultiplier: 1, moveMult: .9 }],
+  ['Cluster launcher', 'CLUSTER', 'Launcher', 41, 28, 2000, 2, 10, 4, 160, { pellets: 3, spread: .06, splash: { radius: 6, damage: 25 }, headshotMultiplier: 1 }],
   ['Nova cannon', 'NOVA', 'Launcher', 48, 110, 3000, 1, 4, 6, 250, { splash: { radius: 12, damage: 110 }, headshotMultiplier: 1, moveMult: .85 }],
   ['Laser rifle', 'LASER', 'Energy', 10, 5, 30, 100, 300, 2.5, 60, { auto: true }],
   ['Flamethrower', 'FLAME', 'Energy', 20, 4, 50, 150, 450, 3, 14, { auto: true, spread: .08, falloff: [4, 14, .3], burn: { dps: 8, secs: 3 }, moveMult: .95 }],
@@ -219,7 +219,7 @@ const ROWS = [   // name, short, class, unlock level, damage, delay ms, magazine
   ['Thunder cannon', 'THUNDER', 'Energy', 35, 14, 900, 5, 25, 3, 45, { pellets: 5, spread: .08, splash: { radius: 2, damage: 12 } }],
   ['Void blaster', 'VOID', 'Energy', 38, 12, 150, 20, 100, 2, 60, { auto: true, lifesteal: .4 }],
   ['Death ray', 'DEATHRAY', 'Energy', 45, 3, 20, 300, 900, 5, 50, { auto: true, moveMult: .85 }],
-  ['Singularity gun', 'SINGULAR', 'Energy', 50, 90, 2500, 1, 5, 5, 200, { splash: { radius: 14, damage: 130 }, headshotMultiplier: 1 }]
+  ['Singularity gun', 'SINGULAR', 'Energy', 50, 90, 2500, 1, 5, 5, 200, { splash: { radius: 14, damage: 85 }, headshotMultiplier: 1 }]
 ];
 const WEAPONS = (() => {
   const list = BASE_WEAPONS.map((w, i) => ({ ...w, cls: ['Rifle', 'Marksman', 'Launcher'][i], ...(i === 1 ? { zoom: 18 } : {}) }));
@@ -229,8 +229,9 @@ const WEAPONS = (() => {
 const POWER = WEAPONS.map((w, i) => i).filter(i => ['Marksman', 'Launcher', 'Energy', 'LMG', 'Shotgun'].includes(WEAPONS[i].cls));   // what the map's weapon pickups hand out: a different power weapon every match
 const cleanLoadout = a => Array.isArray(a) && a.length === 3 && a.every(i => Number.isInteger(i) && i >= 0 && i < WEAPONS.length) ? a : [0, 1, 2];
 const loadoutOf = p => p.bot ? p.loadout : cleanLoadout(profOf(p).eq.loadout).map(i => lvOf(p) >= WEAPONS[i].unlockLevel ? i : 0);   // the three weapons on keys 1-3
-function botLoadout(lv) {   // one weapon for the middle, one for close in, one for long range, from what its fake level has unlocked
-  const pool = cls => { const a = WEAPONS.map((w, i) => i).filter(i => cls.includes(WEAPONS[i].cls) && WEAPONS[i].unlockLevel <= lv); return a.length ? randOf(a) : 0; };
+const BOT_LEVEL = 10;   // whatever level a bot pretends to be, it only carries guns a level 10 player could use; anything better it has to find on the map
+function botLoadout() {   // one weapon for the middle, one for close in, one for long range, all from the level 10 list
+  const pool = cls => { const a = WEAPONS.map((w, i) => i).filter(i => cls.includes(WEAPONS[i].cls) && WEAPONS[i].unlockLevel <= BOT_LEVEL); return a.length ? randOf(a) : 0; };
   return [pool(['Rifle', 'LMG', 'Energy']), pool(['Pistol', 'SMG', 'Shotgun']), pool(['Marksman', 'Launcher'])];
 }
 const spreadDir = (d, s) => { const x = d.x + (Math.random() - .5) * 2 * s, y = d.y + (Math.random() - .5) * 2 * s, z = d.z + (Math.random() - .5) * 2 * s, l = Math.hypot(x, y, z); return { x: x / l, y: y / l, z: z / l }; };
@@ -310,7 +311,7 @@ function buildWild(c) {
     bases.push({ team, x: 0, z: Z(60), hx: 76, hz: 56 });
     spawns[team] = [...spawnRow(-24, Z(12), 24, Z(12), 8), ...spawnRow(-24, Z(20), 24, Z(20), 8)];
     const vy = sz < 0 ? Math.PI : 0; vehicles.push({ x: -34, z: Z(100), yaw: vy, type: 'car' }, { x: 34, z: Z(100), yaw: vy, type: 'mech' }, { x: 0, z: Z(96), yaw: vy, type: 'heli' }, { x: 26, z: Z(92), yaw: vy, type: 'tank' });   // a car, a mech, a helicopter and a tank in each base
-    for (const x of [-17, 17]) { W(x, 110, 1.4, 1.4, 2, 'building'); turrets.push({ team, x, y: 2, z: Z(110) }); }   // a sentry turret on a pedestal either side of the gate
+    for (const x of [-17, 17]) { W(x, 110, 1.4, 1.4, 2, 'building'); turrets.push({ team, x, y: 2, z: Z(110) }); vehicles.push({ x, z: Z(110), yaw: vy, type: 'turret', y: 2, team, sentry: turrets.length }); }   // a sentry turret on a pedestal either side of the gate; a teammate can take its gun seat (press E at the foot of the pedestal) and it stops firing by itself while someone is in it
   }
   // The middle: a three-step rocky hill, climbed by ramps, with the rocket launcher on top.
   [24, 16, 8].forEach((s, i) => { add(0, 0, s, s, 2, 'mesa', i * 2); for (const d of [-1, 1]) ramps.push({ ...RAMP(0, d * (s + 2.5), 5, 2.5, i * 2, i * 2 + 2, d > 0 ? 'N' : 'S'), nat: 1 }); });
@@ -380,7 +381,8 @@ for (const m of Object.values(MAPS)) {   // manned gun nests on top of the talle
   const pil = m.blocks.filter(b => b.kind === 'pillar' || b.kind === 'spire'), top = Math.max(0, ...pil.map(b => b.h));
   if (top >= 7) for (const b of pil) if (b.h === top) m.vehicles.push({ x: b.x, z: b.z, yaw: 0, type: 'turret', y: (b.y || 0) + b.h });
 }
-const clientMap = m => { const { spawns, ...rest } = m; return rest; };   // players never need the spawn list
+const vehDefs = m => m.vehicles.filter(d => !d.sentry || match.mode === 'tdm');   // the base sentries (and their gun seats) only exist in team deathmatch
+const clientMap = m => { const { spawns, ...rest } = m; return { ...rest, vehicles: vehDefs(m) }; };   // players never need the spawn list
 
 // Floors: the ramp's height at a point (t runs 0 at the low end to 1 at the high end), and the highest floor at x, z that is not above yMax.
 const rampT = (r, x, z) => {
@@ -679,7 +681,7 @@ function startMatch(mode, mapId) {
   clearTimeout(nextTimer);
   map = MAPS[mapId] || map;
   match.mode = mode; match.state = 'live'; match.team = { vanguard: 0, horizon: 0 }; match.endsAt = Date.now() + MATCH_MS;
-  vehicles = map.vehicles.map((d, i) => ({ id: i + 1, type: d.type || 'car', x: d.x, y: d.y || 0, sy: d.y || 0, z: d.z, yaw: d.yaw, speed: 0, driver: null, gunner: null, dirty: false, heat: 0, lockUntil: 0 }));
+  vehicles = vehDefs(map).map((d, i) => ({ id: i + 1, team: d.team || null, sentry: d.sentry || 0, type: d.type || 'car', x: d.x, y: d.y || 0, sy: d.y || 0, z: d.z, yaw: d.yaw, speed: 0, driver: null, gunner: null, dirty: false, heat: 0, lockUntil: 0 }));
   for (const p of players.values()) p.vehicle = 0;
   const list = [...players.values()].sort(() => Math.random() - .5), flip = Math.random() < .5 ? 1 : 0;   // random split into teams
   list.forEach((p, i) => { p.kills = p.deaths = 0; p.faction = mode === 'tdm' ? ((i + flip) % 2 ? 'horizon' : 'vanguard') : 'ffa'; });
@@ -735,16 +737,24 @@ function botName() {   // 23% silly, 77% sci-fi, never a name already in this ro
   if (!list.length) list = unused(coolNames.concat(sillyNames));
   return list.length ? randOf(list) : 'Unit_' + nextId;
 }
+// Bot levels follow a real player population: most people never get past level 10, and a level 100 is a one-in-ten-thousand sight. [lowest level, highest level, share of all bots]
+const LEVEL_BANDS = [[1, 10, .75], [11, 20, .145], [21, 30, .065], [31, 40, .03],               // the shares you gave for levels 1-40 (75%, 14.5%, 6.5%, 3%)
+  [41, 50, .005], [51, 60, .0025], [61, 70, .0012], [71, 80, .0007], [81, 90, .00035], [91, 99, .00015], [100, 100, .0001]];   // the last 1% thins out fast: 0.5% reach the 40s, and 1 bot in 10,000 is level 100
+function rollBotLevel() {
+  let r = Math.random(), band = LEVEL_BANDS[LEVEL_BANDS.length - 1];
+  for (const b of LEVEL_BANDS) { if (r < b[2]) { band = b; break; } r -= b[2]; }
+  return band[0] + Math.floor((band[1] - band[0] + 1) * Math.pow(Math.random(), 1.5));   // inside a band the lower levels are more common
+}
 function spawnBot() {
   const id = nextId++, body = randOf(PREMIUM), weapon = randOf(SKINS.filter(s => s.slot === 'weapon')).id, frame = randOf(SKINS.filter(s => s.slot === 'frame')).id;   // every bot: a random premium skin and a random exoskeleton
   const b = {
     id, key: 'bot' + id, bot: true, sock: BOT_SOCK, token: null, prof: { xp: 0, coins: 0, kills: 0, owned: [body, weapon, frame], eq: { body, weapon, frame } },
-    lv: 5 + Math.floor(Math.random() * 91), shopAt: 0, name: botName(), faction: pickFaction(), x: 0, y: 0, z: 0, yaw: 0, pitch: 0, last: 0, lastVeh: 0, useAt: 0,
+    lv: rollBotLevel(), shopAt: 0, name: botName(), faction: pickFaction(), x: 0, y: 0, z: 0, yaw: 0, pitch: 0, last: 0, lastVeh: 0, useAt: 0,
     hp: HP, alive: true, kills: 0, deaths: 0, ammos: WEAPONS.map(w => w.magazineSize), reserve: WEAPONS.map(w => w.maxAmmo), held: new Set(), wi: 0, vehicle: 0, reloadEnd: 0, nextShot: 0,
     respawnAt: 0, epoch: 0, rtt: 0, hist: [], nameAt: 0, vy: 0, onGround: true, strafe: 1, strafeAt: 0, stuck: 0, detourUntil: 0, detour: 0, panic: null, goal: null, goalAt: 0
   };
   b.hp = maxHp(b);
-  b.loadout = botLoadout(b.lv); b.wi = b.loadout[0];   // a bot only starts with a weapon its fake level has unlocked
+  b.loadout = botLoadout(); b.wi = b.loadout[0];   // a bot only starts with a weapon a level 10 player could use
   const sp = pickSpawn(b); Object.assign(b, { x: sp.x, y: sp.y, z: sp.z, yaw: sp.yaw });
   players.set(b.key, b); emit('join', pub(b)); sendScores();
 }
@@ -823,7 +833,7 @@ function routeStep(st, nav, x, z, gx, gz, now) {   // the next point to walk to:
   return st.path[st.i];
 }
 // ---- bots and rides: a free vehicle or pillar gun, or the roof gun of a friendly car that already has a driver ----
-const botCanUse = (p, v) => v.type === 'turret' ? !v.driver : !v.driver ? true : v.type === 'car' && !v.gunner && v.driver !== p && (match.mode !== 'tdm' || v.driver.faction === p.faction);
+const botCanUse = (p, v) => v.type === 'turret' ? !v.driver && (!v.team || match.mode !== 'tdm' || v.team === p.faction) : !v.driver ? true : v.type === 'car' && !v.gunner && v.driver !== p && (match.mode !== 'tdm' || v.driver.faction === p.faction);
 function botPickVehicle(p) {
   let best = null, bd = 90;
   for (const v of vehicles) { if (!botCanUse(p, v)) continue; const d = Math.hypot(v.x - p.x, v.z - p.z) * (v.type === 'turret' ? .8 : 1); if (d < bd) { bd = d; best = v; } }
@@ -857,7 +867,10 @@ function botGun(p, v, now) {   // on a pillar gun or a car's roof gun: swing at 
   emit('fx', { a: [r2(o.x), r2(o.y), r2(o.z)], b: [r2(o.x + d.x * t), r2(o.y + d.y * t), r2(o.z + d.z * t)], f: p.faction, s: p.prof.eq.weapon, i: p.id, e: 0 });
   applyHit(p, hit, o, d, w);
 }
-const botSkill = lv => clamp(.1 + .72 * (lv - 5) / 90 + (Math.random() - .5) * .3, .06, .88);   // 0 hopeless .. 1 perfect: follows the fake level, jittered so equal levels differ, capped so nobody is perfect
+const botSkill = lv => {   // 0 hopeless .. 1 perfect. Skill climbs quickly over the first levels and slowly after: level 5 is poor (about .15), 20 is .33, 40 is .51, 70 is .74, and only level 100 is close to perfect (.95).
+  const base = .06 + .89 * Math.pow(Math.min(lv, 100) / 100, .75), jitter = (Math.random() - .5) * .14;   // equal levels still differ a little
+  return clamp(base + jitter, .05, Math.min(.97, base + .07));   // nobody plays above their level
+};
 function steer(p, mx, mz) {   // the clear heading nearest to where the bot wants to go, probing 1.5 m and 3.2 m ahead, so it slides along a wall instead of pushing into it
   const a0 = Math.atan2(mz, mx), s = p.side || 1;
   for (const off of [0, .45, -.45, .9, -.9, 1.4, -1.4, 2, -2]) {
@@ -884,12 +897,12 @@ function botTick(now) {
       const d = Math.hypot(q.x - p.x, q.y - p.y, q.z - p.z); if (d < best) { best = d; tgt = q; }
     }
     if (tgt !== p.lastTgt) { p.lastTgt = tgt; p.reactAt = now + (900 - 700 * skill) + Math.random() * 400; }   // a new target takes a moment to notice: slower for weaker bots
-    if (tgt && now > (p.wsAt || 0) && !p.reloadEnd) { p.wsAt = now + 1200; const ok = i => p.ammos[i] > 0 || p.reserve[i] > 0; let pick = p.wi, bs = -1e9; for (const i of p.loadout) { if (!ok(i)) continue; const w1 = WEAPONS[i], sc = -Math.abs(best - w1.range * .4) - (w1.splash && best < 8 ? 60 : 0); if (sc > bs) { bs = sc; pick = i; } } if (pick !== p.wi) p.wi = pick; }   // each weapon has a distance it likes   // sniper at range, rockets mid range, rifle up close
+    if (tgt && now > (p.wsAt || 0) && !p.reloadEnd) { p.wsAt = now + 1200; const ok = i => p.ammos[i] > 0 || p.reserve[i] > 0; let pick = p.wi, bs = -1e9; for (const i of new Set([...p.loadout, ...p.held])) { if (!ok(i)) continue; const w1 = WEAPONS[i], sc = -Math.abs(best - w1.range * .4) - (w1.splash && best < 8 ? 60 : 0); if (sc > bs) { bs = sc; pick = i; } } if (pick !== p.wi) p.wi = pick; }   // each weapon has a distance it likes   // sniper at range, rockets mid range, rifle up close
     if (!p.goalVeh && now > (p.seekAt || 0)) { p.seekAt = now + 4000; if ((!tgt || best > 30) && Math.random() < .2 + skill * .4) { const v = botPickVehicle(p); if (v) { p.goalVeh = v.id; p.goalVehAt = now + 30000; } } }   // fancy a ride or a gun?
     if (!tgt && (!p.goal || now > p.goalAt || Math.hypot(p.goal.x - p.x, p.goal.z - p.z) < 3)) { p.goal = Math.random() < .3 ? { x: 0, z: 0 } : randOf(map.spawns.ffa); p.goalAt = now + 8000; }
     const gv = p.goalVeh ? vehicles.find(v => v.id === p.goalVeh && botCanUse(p, v)) : null; if (p.goalVeh && (!gv || now > p.goalVehAt)) p.goalVeh = 0;
     const toVeh = !!gv && (!tgt || best > 22), hold = !!tgt && !toVeh;   // heading for a ride, or hunting
-    const gx = toVeh ? gv.x : tgt ? tgt.x : p.goal.x, gy = hold ? tgt.y + 1.2 : p.y + BODY.eye, gz = toVeh ? gv.z : tgt ? tgt.z : p.goal.z;
+    const gx = toVeh ? gv.x : tgt ? tgt.x : p.goal.x, gy = hold ? tgt.y + 1.2 + .38 * clamp((skill - .75) / .2, 0, 1) : p.y + BODY.eye, gz = toVeh ? gv.z : tgt ? tgt.z : p.goal.z;
     const rt = p.rt1 || (p.rt1 = {}), nearV = toVeh && Math.hypot(gx - p.x, gz - p.z) < 7, [rx, rz] = nearV ? [gx, gz] : routeStep(rt, navFor(map, false), p.x, p.z, gx, gz, now), rl0 = Math.hypot(rx - p.x, rz - p.z) || 1;   // the memorised route's next point
     if (nearV) rt.path = null;
     const faceT = hold && !rt.path;   // face the target when the way is clear, the route when it bends
@@ -929,7 +942,7 @@ function botTick(now) {
     if (p.ammos[p.wi] <= 0) { if (p.reserve[p.wi] <= 0 && p.wi) p.wi = 0; else startReload(p); continue; }   // out of rockets or sniper rounds: back to the rifle
     const look = cast(p, o, u, dist); if (look.who !== tgt && look.t < dist - 1) continue;   // a wall is in the way: keep running, don't waste bullets
     if (Math.random() < (1 - skill) * .25) { p.nextShot = now + 120 + Math.random() * 300; continue; }   // weaker bots hesitate and waste time
-    const e = (.025 + dist * .0012) * (1.9 - 1.5 * skill) * (p.panic ? 1.6 : 1), d = { x: u.x + (Math.random() - .5) * 2 * e, y: u.y + (Math.random() - .5) * 2 * e, z: u.z + (Math.random() - .5) * 2 * e };
+    const e = (.025 + dist * .0012) * (.12 + 1.9 * Math.pow(1 - skill, 1.3)) * (p.panic ? 1.6 : 1), d = { x: u.x + (Math.random() - .5) * 2 * e, y: u.y + (Math.random() - .5) * 2 * e, z: u.z + (Math.random() - .5) * 2 * e };
     const l = Math.hypot(d.x, d.y, d.z); d.x /= l; d.y /= l; d.z /= l;                        // the random offset: bots do not have perfect aim
     p.nextShot = now + w.fireRateDelay + Math.random() * 90; p.ammos[p.wi] = Math.max(0, p.ammos[p.wi] - (w.ammoPerShot || 1));
     for (let k = 0; k < (w.pellets || 1); k++) {
@@ -1011,6 +1024,8 @@ function makeTurrets() {   // two sentries at each base entrance, in team deathm
 }
 function tickTurrets(now) {   // a turret sweeps its scanner dome; anything hostile inside it (on foot or driving) is tracked and shot
   for (const t of turrets) {
+    const mv = vehicles.find(v => v.sentry === t.id);
+    if (mv && mv.driver) { const D = mv.driver; t.yaw = r3(wrap(D.bot ? D.yaw : mv.yaw)); t.pitch = r3(clamp(D.pitch || 0, -.4, 1.2)); continue; }   // someone is sitting in it: it points where they point and only fires when they do
     let tgt = null, best = TURRET.radius;
     for (const q of players.values()) { if (!q.alive || q.faction === t.faction) continue; const d = Math.hypot(q.x - t.x, q.y + 1 - t.y, q.z - t.z); if (d < best) { best = d; tgt = q; } }
     if (!tgt) continue;
@@ -1160,7 +1175,7 @@ function connect(socket, room) {
     let best = null, bd = VEH.useRange, gun = false;
     for (const v of vehicles) {   // a free seat, a pillar gun, or the roof gun of a friendly car that already has a driver
       const open = !v.driver, roof = v.type === 'car' && v.driver && !v.gunner && (match.mode !== 'tdm' || v.driver.faction === me.faction);
-      if (!(open || roof) || (v.type !== 'turret' && Math.abs((v.y || 0) - me.y) > 3)) continue;
+      if (!(open || roof) || (v.type !== 'turret' && Math.abs((v.y || 0) - me.y) > 3) || (v.team && match.mode === 'tdm' && v.team !== me.faction)) continue;   // an enemy base's sentry is not yours to man
       const d = distToVehicle(v, me.x, me.z); if (d <= bd) { best = v; bd = d; gun = !open; }
     }
     if (!best) return;
@@ -1176,7 +1191,7 @@ function connect(socket, room) {
     if (!v || !d || !me.alive || me.seat || now - me.lastVeh < 15) return;
     if (![d.x, d.z, d.yaw, d.speed].every(n => typeof n === 'number' && Number.isFinite(n))) return;
     me.lastVeh = now;
-    if (v.type === 'turret') { v.yaw = r3(wrap(d.yaw)); me.x = v.x; me.z = v.z; me.y = v.sy; v.dirty = true; return; }   // a pillar gun only turns
+    if (v.type === 'turret') { v.yaw = r3(wrap(d.yaw)); if (Number.isFinite(d.pitch)) me.pitch = r3(clamp(d.pitch, -1.2, 1.2)); me.x = v.x; me.z = v.z; me.y = v.sy; v.dirty = true; return; }   // a pillar gun only turns
     const T = vd(v), lim = map.half - T.hx;
     v.x = r2(clamp(d.x, -lim, lim)); v.z = r2(clamp(d.z, -lim, lim)); v.yaw = r3(wrap(d.yaw)); v.speed = r2(clamp(d.speed, -T.maxReverse, T.maxSpeed));
     v.y = v.type === 'heli' && Number.isFinite(d.y) ? r2(clamp(d.y, 0, map.bounds.max[1] - 4)) : 0;   // only helicopters leave the ground
