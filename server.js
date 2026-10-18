@@ -9,7 +9,7 @@
  *   ADMIN_KEY  any secret text      turns on /admin so you can load a map or mode on the spot (see below)
  *   TDM_LIMIT, FFA_LIMIT            kills needed to win
  *   ALLOWED_ORIGINS                 your website address(es), comma separated
- *   SAVE_SECRET  any long secret    signs each player's backup save. SET THIS: Render's free plan wipes files on every restart,
+ *   SAVE_SECRET  any long secret    signs each player's backup save (on Render it defaults to a key derived from the service id, so progress survives restarts). Set your own to keep it private: Render's free plan wipes files on every restart,
  *                                   and the signed backup (kept in the player's browser) is what restores their progress
  *   DATA_DIR                        where profiles.json lives (default ./data; only survives restarts on a paid host with a disk)
  *
@@ -115,8 +115,11 @@ const newProfile = () => ({ xp: 0, coins: 0, kills: 0, owned: ['issue', 'w-issue
 // Render's free plan wipes local files on every restart or sleep, so each player's browser also holds a signed backup
 // (see sign/adopt below). The signature uses SAVE_SECRET, so a player can't edit their own XP or coins.
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
-const SAVE_SECRET = process.env.SAVE_SECRET || crypto.randomBytes(32).toString('hex');
-if (!process.env.SAVE_SECRET) console.warn("SAVE_SECRET is not set: players' backup saves will stop working whenever this server restarts.");
+// The secret that signs every player's backup save. A save only restores if it was signed with the same secret, so the secret must not change when the server restarts.
+// SAVE_SECRET wins if it is set. Otherwise, on Render, one is derived from the service's own id (it is the same after every restart and redeploy, and is not in this file for anyone to read).
+const stableSecret = () => process.env.RENDER_SERVICE_ID ? crypto.createHash('sha256').update('riftline-save-key:' + process.env.RENDER_SERVICE_ID).digest('hex') : null;
+const SAVE_SECRET = process.env.SAVE_SECRET || stableSecret() || crypto.randomBytes(32).toString('hex');
+if (!process.env.SAVE_SECRET) console.warn(process.env.RENDER_SERVICE_ID ? "SAVE_SECRET is not set: signing backup saves with a key derived from this Render service's id, so progress survives restarts. Set SAVE_SECRET to choose your own." : "SAVE_SECRET is not set and this is not Render: players' backup saves will stop working whenever this server restarts.");
 class Store {
   constructor(file) {
     this.file = file; this.timer = null; this.data = {};
@@ -305,7 +308,7 @@ function buildWild(c) {
       W(x, d, 5, 5, 13.4, 'building'); W(x, d, 7, 7, .6, 'platform', 13.4);
       for (const [px, pd, hx, hd] of [[0, -7, 7, .3], [0, 7, 7, .3], [-7, 0, .3, 7], [7, 0, .3, 7]]) if (pd !== (d === 12 ? 7 : -7)) W(x + px, d + pd, hx, hd, 1.2, 'wall', 14);   // parapet, open where the ramp arrives
       ramps.push(d === 12 ? RAMP(x, Z(36.5), 3, 17.5, 0, 14, dir.out) : RAMP(x, Z(83.5), 3, 17.5, 0, 14, dir.in));
-      pickups.push({ wi: 1, x, y: 15.2, z: Z(d) });   // a sniper rifle on every tower deck
+      if (x === -68 && d === 12) pickups.push({ wi: 1, x, y: 15.2, z: Z(d) });   // one weapon on the deck of one tower in each base
     }
     for (let i = 0; i < 10; i++) { const x = between(-60, 60), d = between(52, 112); if (Math.abs(x) > 14 && !(d > 90 && Math.abs(Math.abs(x) - 30) < 8) && free(x, Z(d), 1.5, 1.5)) add(x, Z(d), 1.2, 1.2, 1.2, 'crate'); }   // loose cover in the yard, keeping the vehicle bays clear
     bases.push({ team, x: 0, z: Z(60), hx: 76, hz: 56 });
@@ -323,7 +326,7 @@ function buildWild(c) {
     const s0 = Math.floor(R() * 4); let n = 0;
     for (let i = 0; i < 4 && n < 2; i++) if (lean(b, 'NSEW'[(s0 + i) % 4], h * 3.2, 3.5)) n++;
     if (!n) { blocks.pop(); return false; }
-    pickups.push({ wi: np++ % 3, x: rd(b.x), y: rd(h + 1.2), z: rd(b.z) }); return true;
+    return true;
   };
   const mound = (x, z) => {   // a low hill or dune you can run straight over
     const f = R() < .5, a = between(8, 14), s = between(5, 9), h = between(1.4, 2.6), b = put(x, z, f ? s : a, f ? a : s, h, 'mound', 0, 5); if (!b) return false;
@@ -374,6 +377,16 @@ function buildWild(c) {
   for (let i = 0; i < c.rocks; i++) outcrop(between(-285, 285), between(-285, 285));
   for (let i = 0; i < c.low; i++) put(between(-285, 285), between(-285, 285), between(.7, 1.5), between(.7, 1.5), between(.8, 1.5), 'rock', 0, 2);   // low boulders: cover you have to jump
   for (let i = 0, n = 0; n < 2 && i < 80; i++) { const x = between(-120, 120), z = between(-100, 100); if (Math.hypot(x, z) > 40 && free(x, z, 3, 4, 4)) { vehicles.push({ x: rd(x), z: rd(z), yaw: rd(between(-3, 3)), type: 'car' }); n++; } }   // two spare cars in the field
+  // Hidden weapons: a few power weapons tucked into nooks, spots with rock close on two or three sides, far from the bases and from each other (one gun per 110 m or so).
+  { const cand = []; for (let t = 0; t < 6000; t++) {
+      const x = between(-280, 280), z = between(-165, 165); if (!free(x, z, 1.2, 1.2, 1.2) || Math.hypot(x, z) < 45) continue;
+      const wall = (dx, dz) => blocks.some(b => b.h >= 1.8 && (b.y || 0) < 1 && Math.abs(x + dx - b.x) < b.hx && Math.abs(z + dz - b.z) < b.hz);
+      const closed = [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([dx, dz]) => wall(dx * 3, dz * 3) || wall(dx * 5.5, dz * 5.5)).length;
+      if (closed <= 3) cand.push({ x, z, closed, r: R() });   // never boxed in on all four sides, so there is always a way in
+    }
+    cand.sort((a, b) => b.closed - a.closed || a.r - b.r);   // the most tucked-away spots first
+    const want = 3 + (c.hidden == null ? 5 : c.hidden);
+    for (const need of [2, 1, 0]) for (const k of cand) { if (pickups.length >= want) break; if (k.closed >= need && pickups.every(q => Math.hypot(q.x - k.x, q.z - k.z) > 110)) pickups.push({ wi: 0, x: rd(k.x), y: 1.2, z: rd(k.z) }); } }   // nooks first; if a map has too few, the next best spots
   for (let t = 0; spawns.ffa.length < 20 && t < 3000; t++) { const x = rd(between(-280, 280)), z = rd(between(-165, 165)); if (free(x, z, 1, 1, 3) && spawns.ffa.every(s => Math.hypot(s.x - x, s.z - z) > 40)) spawns.ffa.push(at(x, 0, z)); }
   const m = {
     id: c.id, name: c.name, half: 300, theme: c.theme, sky: c.sky, fog: c.fog || [170, 720], sun: true, big: true, ceiling: 0, lights: [], tint: c.tint, accent: c.accent, stars: !!c.stars,
@@ -615,7 +628,7 @@ function hurt(shooter, target, dmg, head, how) {
   if (!dead) { emitYou(target); return; }
   target.hp = 0; target.alive = false; target.deaths++; shooter.kills++; target.respawnAt = Date.now() + RESPAWN_MS; target.reloadEnd = 0;
   if (target.vehicle) leaveVehicle(target, false);
-  dropWeapon(target);   // the weapon they held floats where they fell
+  if (DROPS_ON) dropWeapon(target);   // off by default: the weapon they held is gone with them
   if (match.mode === 'tdm') match.team[shooter.faction]++;
   grant(shooter, XP_PER_KILL, COINS_PER_KILL, 'kill');
   match.hot = { x: target.x, z: target.z, t: Date.now() };   // where the last fight was, for bots with nothing in sight
@@ -670,13 +683,14 @@ function validateMap(m) {
 }
 
 // ---- matches and maps ----
+const nextMode = () => MODE === 'rotate' ? randOf(['tdm', 'ffa']) : match.mode;   // a random game mode each match too (it can repeat, there is no fixed order)
 const nextMapId = () => MAP_ENV !== 'rotate' ? MAP_ENV : randOf(MAP_IDS.filter(id => id !== map.id));   // a random map each time, never the one just played
 
 function endMatch(winner, wf, winners) {
   if (match.state !== 'live') return;
   match.state = 'over';
   for (const p of winners || []) grant(p, 0, WIN_COINS, 'win');
-  const next = MODE === 'rotate' ? (match.mode === 'tdm' ? 'ffa' : 'tdm') : match.mode, nextMap = nextMapId();
+  const next = nextMode(), nextMap = nextMapId();
   emit('match', { ...matchInfo(), winner, wf, next, nextMap: MAPS[nextMap].name, ms: INTERMISSION_MS });
   { const room = cur; nextTimer = setTimeout(() => inRoom(room, () => startMatch(next, nextMap)), INTERMISSION_MS); }   // the timer fires outside any room, so re-enter this one
 }
@@ -980,9 +994,10 @@ function botTick(now) {
   }
 }
 
-// ---- weapons in the world: map pickups (they return 25 s after being taken) and weapons dropped by the dead (they vanish after 30 s).
+// ---- weapons in the world: a few map pickups, hidden away. Once somebody takes one it is gone for everyone until the 5 minute cooldown ends, and then it comes back as a new weapon.
+// The dead no longer drop what they were holding (set DROPS=on to bring that back), so a good weapon can never be passed on.
 // E swaps what you hold for the pickup within reach. Everyone respawns with the assault rifle. ----
-const PICKUP_RESPAWN_MS = 25000, DROP_LIFE_MS = 30000, PICKUP_RANGE = 2.5, MAX_DROPS = 24;
+const PICKUP_RESPAWN_MS = (Number(process.env.PICKUP_RESPAWN_MIN) || 5) * 60000, DROP_LIFE_MS = 30000, PICKUP_RANGE = 2.5, MAX_DROPS = 24, DROPS_ON = process.env.DROPS === 'on';
 const pickupRows = () => pickups.filter(k => k.up).map(k => [k.id, k.wi, r2(k.x), r2(k.y), r2(k.z), k.drop ? 1 : 0]);
 function finishReload(p) {   // a reload moves rounds from the spare ammo into the magazine
   const take = Math.min(W(p).magazineSize - p.ammos[p.wi], p.reserve[p.wi]);
@@ -1005,7 +1020,7 @@ function dropWeapon(p) {   // the dead leave the weapon they were holding at the
 }
 function tickPickups(now) {   // map pickups come back, old drops fade away
   let changed = false;
-  for (let i = pickups.length - 1; i >= 0; i--) { const k = pickups[i]; if (k.drop && now >= k.exp) { pickups.splice(i, 1); changed = true; } else if (!k.up && now >= k.back) { k.up = true; changed = true; } }
+  for (let i = pickups.length - 1; i >= 0; i--) { const k = pickups[i]; if (k.drop && now >= k.exp) { pickups.splice(i, 1); changed = true; } else if (!k.up && now >= k.back) { k.up = true; k.wi = randOf(POWER); changed = true; } }
   if (changed) emit('pk', pickupRows());
 }
 // One shot's damage: a headshot multiplies it, and a rocket also hurts every enemy near the blast (less the further they are; never you or your team).
@@ -1120,10 +1135,24 @@ function inRoom(room, fn) {   // run fn with the shared variables pointing at th
   const prev = cur; loadRoom(room);
   try { return fn(); } finally { room.map = map; room.vehicles = vehicles; room.tick = tick; room.nextTimer = nextTimer; room.pickups = pickups; room.turrets = turrets; if (prev) loadRoom(prev); }
 }
-function createRoom() {
-  const room = { id: 'Server-' + REGION + '-' + (++roomSeq), players: new Map(), match: { mode: 'tdm', state: 'live', team: { vanguard: 0, horizon: 0 } }, map: MAPS.field, vehicles: [], tick: 0, nextTimer: null, spawnHeld: new Map(), pickups: [], turrets: [], emptySince: 0 };
+// ---- The server list: MAX_ROOMS servers (50 by default) named Server-US-1 .. Server-US-50. Each is a real room that opens the first time somebody joins it, with the map and mode the list showed.
+// The player counts on the list are display numbers between 10 and 15 out of 16 that drift now and then, so every server looks open to join (every room fills itself to 16 with bots anyway).
+const slotName = n => 'Server-' + REGION + '-' + n;
+const slotNo = id => { const m = typeof id === 'string' && /^Server-[A-Z]+-(\d{1,3})$/.exec(id), n = m ? Number(m[1]) : 0; return n >= 1 && n <= MAX_ROOMS && id === slotName(n) ? n : 0; };
+const plans = new Map(), crowd = new Map();   // what an unopened server will play, and the numbers shown for each server
+const planOf = id => { let p = plans.get(id); if (!p) { p = { mode: MODE === 'rotate' ? randOf(['tdm', 'ffa']) : MODE, map: MAP_ENV === 'rotate' ? randOf(MAP_IDS) : MAP_ENV }; plans.set(id, p); } return p; };
+const shownPlayers = (id, now) => { let c = crowd.get(id); if (!c) { c = { n: 10 + Math.floor(Math.random() * 6), t: now + 15000 + Math.random() * 25000 }; crowd.set(id, c); } if (now > c.t) { c.n = clamp(c.n + (Math.random() < .5 ? -1 : 1), 10, 15); c.t = now + 15000 + Math.random() * 25000; } return c.n; };
+function serverList() {
+  const now = Date.now();
+  return { max: MAX_PLAYERS, servers: Array.from({ length: MAX_ROOMS }, (_, i) => { const id = slotName(i + 1), r = rooms.get(id), pl = r ? { mode: r.match.mode, map: r.map.id } : planOf(id); return { id, n: i + 1, region: REGION, map: MAPS[pl.map].name, mode: pl.mode, players: shownPlayers(id, now), max: MAX_PLAYERS }; }) };
+}
+app.get('/servers', (req, res) => { res.set('Access-Control-Allow-Origin', '*'); res.set('Cache-Control', 'no-store'); res.json(serverList()); });
+function createRoom(wanted) {
+  let n = slotNo(wanted); if (!n) for (n = 1; n <= MAX_ROOMS && rooms.has(slotName(n)); n++);   // the server asked for, else the first one not open yet
+  const room = { id: slotName(n), players: new Map(), match: { mode: 'tdm', state: 'live', team: { vanguard: 0, horizon: 0 } }, map: MAPS.field, vehicles: [], tick: 0, nextTimer: null, spawnHeld: new Map(), pickups: [], turrets: [], emptySince: 0 };
   rooms.set(room.id, room);
-  inRoom(room, () => startMatch(MODE === 'rotate' ? 'tdm' : MODE, MAP_ENV === 'rotate' ? randOf(MAP_IDS) : MAP_ENV));   // a new room opens on a random map, and every match after it picks another at random
+  const plan = planOf(room.id); plans.delete(room.id);   // it opens with the map and mode the list showed; every match after that picks a random map and mode
+  inRoom(room, () => startMatch(plan.mode, plan.map));
   console.log('opened ' + room.id + ' (' + room.match.mode + ' on ' + room.map.id + '), ' + rooms.size + ' rooms');
   return room;
 }
@@ -1136,7 +1165,10 @@ function matchmake() {
 
 // ---- connections ----
 io.on('connection', socket => {
-  const room = matchmake();
+  const auth = (socket.handshake && socket.handshake.auth) || {}, want = slotNo(auth.server);   // the server picked from the list, if it is a real one
+  let room = want ? rooms.get(auth.server) || (rooms.size < MAX_ROOMS ? createRoom(auth.server) : null) : null;
+  if (room && humansIn(room) >= MAX_PLAYERS) room = null;   // it is full of people: play wherever there is space
+  room = room || matchmake();
   if (!room) { socket.emit('full'); socket.disconnect(true); return; }
   inRoom(room, () => connect(socket, room));
 });
