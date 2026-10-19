@@ -268,60 +268,85 @@ const at = (x, y, z, look = [0, 0]) => ({ x, y, z, yaw: face(x, z, look[0], look
 const spawnRow = (x0, z0, x1, z1, n, look = [0, 0], y = 0) => Array.from({ length: n }, (_, i) => { const t = n === 1 ? .5 : i / (n - 1); return at(rd(x0 + (x1 - x0) * t), y, rd(z0 + (z1 - z0) * t), look); });
 const spawnRing = (r, n, look = [0, 0]) => Array.from({ length: n }, (_, i) => { const a = i * 2 * Math.PI / n; return at(rd(r * Math.cos(a)), 0, rd(r * Math.sin(a)), look); });
 
-// ---- The five maps. Every one is 600 x 600 m: two fortress bases face each other across a wide natural landscape of cliffs, mesas, hills,
-// boulders, craters and trees. Each is generated from a fixed seed, so every server builds exactly the same map. In team deathmatch each team spawns deep inside its own base.
-// Natural kinds: rock (boulder), cliff (long ridge), mesa (flat-topped plateau, climbed by its ramps), mound (low hill or dune), spire (tall rock needle: the tallest carry gun nests),
+// ---- The five maps. Every one covers the same 360,000 square metres (the old 600 x 600) but in a different shape, with the two team bases in different places:
+//   Twin Citadels   a cross              bases at the ends of the north and south arms
+//   Emerald Valley  a long valley        750 x 480, bases at the two far ends
+//   Glacier Run     a circular island    bases at the north and south edges
+//   Sunbaked Canyons an L shape          bases at the end of each arm
+//   Moonrise Craters a ring round a crater peak, bases on opposite sides
+// Each is generated from a fixed seed, so every server builds exactly the same map. Tall cliff walls follow the edge of the shape, so you can see it from inside.
+// Natural kinds: rock (boulder), cliff (long ridge or edge wall), mesa (flat-topped plateau, climbed by its ramps), mound (low hill or dune), spire (tall rock needle: the tallest carry gun nests),
 // tree / pine / cactus (solid trunks). The bases are sci-fi walls (wall, building, platform, crate).
 const MAPS = {};
-const QUARTER = { N: 'W', S: 'E', E: 'N', W: 'S' };   // a quarter turn about the middle sends (x, z) to (z, -x), so a ramp that climbed north now climbs west
-function rotateMap(m) {   // build once with the bases at the north and south ends, then turn the whole map so some have them east and west
-  const wrapPi = a => ((a + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
-  const P = o => { const x = o.x; o.x = o.z; o.z = rd(-x) + 0; return o; }, S = o => { P(o); [o.hx, o.hz] = [o.hz, o.hx]; return o; }, Y = o => { o.yaw = rd(wrapPi(o.yaw + Math.PI / 2)); return o; };
-  m.blocks.forEach(S); m.bases.forEach(S); m.ramps.forEach(r => { S(r); r.dir = QUARTER[r.dir]; });
-  for (const l of Object.values(m.spawns)) l.forEach(o => Y(P(o)));
-  m.vehicles.forEach(o => Y(P(o))); m.pickups.forEach(P); m.turrets.forEach(P);
-  return m;
-}
+const BH = 48;   // the edge walls are as high as a helicopter can fly (the ceiling is 4 m above its top altitude)
+const SHAPES = {   // each gives the playable outline: inside(x, z), its bounding box (ex, ez), the world bounds (bx, bz), and the edge to wall off (straight edges and/or circles)
+  cross: () => { const a = 146.75, E = 380; return { ex: E, ez: E, bx: E + 14, bz: E + 14, inside: (x, z) => (Math.abs(x) <= a && Math.abs(z) <= E) || (Math.abs(z) <= a && Math.abs(x) <= E),
+    edges: [[-a, E, a, E], [a, E, a, a], [a, a, E, a], [E, a, E, -a], [E, -a, a, -a], [a, -a, a, -E], [a, -E, -a, -E], [-a, -E, -a, -a], [-a, -a, -E, -a], [-E, -a, -E, a], [-E, a, -a, a], [-a, a, -a, E]] }; },
+  rect: () => { const X = 375, Z = 240; return { ex: X, ez: Z, bx: X + 14, bz: Z + 14, inside: (x, z) => Math.abs(x) <= X && Math.abs(z) <= Z, edges: [[-X, Z, X, Z], [X, Z, X, -Z], [X, -Z, -X, -Z], [-X, -Z, -X, Z]] }; },
+  disc: () => { const r = 341; return { ex: r, ez: r, bx: r + 30, bz: r + 30, inside: (x, z) => Math.hypot(x, z) <= r, rings: [[0, 0, r, 'out']] }; },
+  L: () => { const E = 325, N = 75; return { ex: E, ez: E, bx: E + 14, bz: E + 14, inside: (x, z) => (x >= -E && x <= N && Math.abs(z) <= E) || (z >= -E && z <= N && Math.abs(x) <= E),
+    edges: [[-E, E, N, E], [N, E, N, N], [N, N, E, N], [E, N, E, -E], [E, -E, -E, -E], [-E, -E, -E, E]] }; },
+  ring: () => { const r = 363, h = 119.5; return { ex: r, ez: r, bx: r + 30, bz: r + 30, inside: (x, z) => { const d = Math.hypot(x, z); return d <= r && d >= h; }, rings: [[0, 0, r, 'out'], [0, 0, h, 'in']] }; }
+};
 function buildWild(c) {
   let seed = c.seed; const R = () => (seed = (seed * 16807) % 2147483647) / 2147483647, between = (a, b) => a + (b - a) * R();
-  const blocks = [], ramps = [], bases = [], spawns = { ffa: [], vanguard: [], horizon: [] }, vehicles = [], pickups = [], turrets = []; let np = 0;
+  const S = SHAPES[c.shape](), AF = 4 * S.ex * S.ez / 360000, rep = n => Math.round(n * AF);   // bigger bounding boxes waste more tries on ground outside the shape, so they get more tries
+  const rx = () => between(-S.ex + 10, S.ex - 10), rz = () => between(-S.ez + 10, S.ez - 10);
+  const blocks = [], ramps = [], bases = [], spawns = { ffa: [], vanguard: [], horizon: [] }, vehicles = [], pickups = [], turrets = [], frames = [];
   const free = (x, z, hx, hz, pad = 2.5, skip = null) => !blocks.some(o => o !== skip && Math.abs(x - o.x) < hx + o.hx + pad && Math.abs(z - o.z) < hz + o.hz + pad) && !ramps.some(r => Math.abs(x - r.x) < hx + r.hx + pad && Math.abs(z - r.z) < hz + r.hz + pad);
-  const keep = (x, z, hx, hz) => Math.abs(x) - hx < 94 && Math.abs(z) + hz > 148;   // the two bases and the open ground in front of their gates stay clear of landscape
-  const inside = (x, z, hx, hz) => Math.abs(x) + hx < 298 && Math.abs(z) + hz < 298;
+  const keep = (x, z, hx, hz) => frames.some(f => { const z0 = f.ax === 'z', u = z0 ? x - f.lat : z - f.lat, d = z0 ? f.back - f.sign * z : f.back - f.sign * x, hu = z0 ? hx : hz, hd = z0 ? hz : hx; return Math.abs(u) - hu < 94 && d - hd < 152; });   // each base and the open ground in front of its gate stays clear of landscape
+  const fits = (x, z, hx, hz) => [[1, 1], [1, -1], [-1, 1], [-1, -1]].every(([a, b]) => S.inside(x + a * (hx + 6), z + b * (hz + 6)));   // inside the shape, with a 6 m margin to the edge wall
   const add = (x, z, hx, hz, h, kind, y = 0) => { const b = B(rd(x), rd(z), rd(hx), rd(hz), rd(h), kind, rd(y)); blocks.push(b); return b; };
-  const put = (x, z, hx, hz, h, kind, y = 0, pad = 2.5) => !keep(x, z, hx, hz) && inside(x, z, hx, hz) && free(x, z, hx, hz, pad) ? add(x, z, hx, hz, h, kind, y) : null;
+  const put = (x, z, hx, hz, h, kind, y = 0, pad = 2.5) => !keep(x, z, hx, hz) && fits(x, z, hx, hz) && free(x, z, hx, hz, pad) ? add(x, z, hx, hz, h, kind, y) : null;
   const lean = (b, side, len, wid) => {   // a natural ramp up one face of a block. It climbs toward the block and ends flush with its top
     const y0 = b.y || 0, y1 = y0 + b.h;
     const r = { S: () => RAMP(b.x, b.z + b.hz + len / 2, wid, len / 2, y0, y1, 'N'), N: () => RAMP(b.x, b.z - b.hz - len / 2, wid, len / 2, y0, y1, 'S'), E: () => RAMP(b.x + b.hx + len / 2, b.z, len / 2, wid, y0, y1, 'W'), W: () => RAMP(b.x - b.hx - len / 2, b.z, len / 2, wid, y0, y1, 'E') }[side]();
-    if (keep(r.x, r.z, r.hx, r.hz) || !inside(r.x, r.z, r.hx, r.hz) || !free(r.x, r.z, r.hx, r.hz, 1, b)) return false;
+    if (keep(r.x, r.z, r.hx, r.hz) || !fits(r.x, r.z, r.hx, r.hz) || !free(r.x, r.z, r.hx, r.hz, 1, b)) return false;
     for (const k of ['x', 'z', 'hx', 'hz', 'y0', 'y1']) r[k] = rd(r[k]);
     r.nat = 1; ramps.push(r); return true;
   };
-  // The bases are written once in base coordinates (d = metres in from the map edge) and mirrored for the other team. `t` marks a block as a team's, which the browser lights up.
-  for (const [team, sz] of [['vanguard', -1], ['horizon', 1]]) {
-    const Z = d => sz * (300 - d), dir = { in: sz < 0 ? 'S' : 'N', out: sz < 0 ? 'N' : 'S' };
-    const W = (x, d, hx, hd, h, kind = 'wall', y = 0) => { const b = add(x, Z(d), hx, hd, h, kind, y); b.t = team; return b; };
+  // A base is written once in its own coordinates (u across, d = metres in from its back wall) and placed wherever the map wants it: `ax` is the axis it points along, `sign` which end, `back` how far
+  // out the back wall is, `lat` how far off centre. `t` marks a block as a team's, which the browser lights up.
+  const addBase = (team, ax, sign, back, lat) => {
+    frames.push({ ax, sign, back, lat }); const zz = ax === 'z';
+    const P = (u, d) => zz ? [lat + u, sign * (back - d)] : [sign * (back - d), lat + u];
+    const out = zz ? (sign > 0 ? 'S' : 'N') : (sign > 0 ? 'E' : 'W'), inn = { N: 'S', S: 'N', E: 'W', W: 'E' }[out], vy = zz ? (sign > 0 ? 0 : Math.PI) : (sign > 0 ? Math.PI / 2 : -Math.PI / 2);   // yaw 0 looks along -Z
+    const W = (u, d, hu, hd, h, kind = 'wall', y = 0) => { const [x, z] = P(u, d), b = add(x, z, zz ? hu : hd, zz ? hd : hu, h, kind, y); b.t = team; return b; };
+    const RP = (u, d, hu, hd, y0, y1, dir) => { const [x, z] = P(u, d); return RAMP(x, z, zz ? hu : hd, zz ? hd : hu, y0, y1, dir); };
     W(0, 2, 80, 2, 14); W(-78, 61, 2, 57, 12); W(78, 61, 2, 57, 12); W(-47, 118, 33, 2, 12); W(47, 118, 33, 2, 12);   // back, side and front walls; the gate is the 28 m gap in the front wall
     W(-36, 82, 22, 1.5, 6); W(36, 82, 22, 1.5, 6);                                                                     // an inner defensive line, also with a 28 m opening
-    W(0, 40, 20, 8, 5, 'building'); ramps.push(RAMP(0, Z(60.5), 5, 12.5, 0, 5, dir.out));                           // the keep, with a ramp up to its roof; the spawns sit behind it
-    for (const x of [-68, 68]) for (const d of [12, 108]) {                                                            // four sniper towers: a 14 m deck reached by a 35 m ramp
-      W(x, d, 5, 5, 13.4, 'building'); W(x, d, 7, 7, .6, 'platform', 13.4);
-      for (const [px, pd, hx, hd] of [[0, -7, 7, .3], [0, 7, 7, .3], [-7, 0, .3, 7], [7, 0, .3, 7]]) if (pd !== (d === 12 ? 7 : -7)) W(x + px, d + pd, hx, hd, 1.2, 'wall', 14);   // parapet, open where the ramp arrives
-      ramps.push(d === 12 ? RAMP(x, Z(36.5), 3, 17.5, 0, 14, dir.out) : RAMP(x, Z(83.5), 3, 17.5, 0, 14, dir.in));
-      if (x === -68 && d === 12) pickups.push({ wi: 1, x, y: 15.2, z: Z(d) });   // one weapon on the deck of one tower in each base
+    W(0, 40, 20, 8, 5, 'building'); ramps.push(RP(0, 60.5, 5, 12.5, 0, 5, out));                                      // the keep, with a ramp up to its roof; the spawns sit behind it
+    for (const u of [-68, 68]) for (const d of [12, 108]) {                                                            // four sniper towers: a 14 m deck reached by a 35 m ramp
+      W(u, d, 5, 5, 13.4, 'building'); W(u, d, 7, 7, .6, 'platform', 13.4);
+      for (const [pu, pd, hu, hd] of [[0, -7, 7, .3], [0, 7, 7, .3], [-7, 0, .3, 7], [7, 0, .3, 7]]) if (pd !== (d === 12 ? 7 : -7)) W(u + pu, d + pd, hu, hd, 1.2, 'wall', 14);   // parapet, open where the ramp arrives
+      ramps.push(d === 12 ? RP(u, 36.5, 3, 17.5, 0, 14, out) : RP(u, 83.5, 3, 17.5, 0, 14, inn));
+      if (u === -68 && d === 12) { const [x, z] = P(u, d); pickups.push({ wi: 1, x: rd(x), y: 15.2, z: rd(z) }); }   // one weapon on the deck of one tower in each base
     }
-    for (let i = 0; i < 10; i++) { const x = between(-60, 60), d = between(52, 112); if (Math.abs(x) > 14 && !(d > 90 && Math.abs(Math.abs(x) - 30) < 8) && free(x, Z(d), 1.5, 1.5)) add(x, Z(d), 1.2, 1.2, 1.2, 'crate'); }   // loose cover in the yard, keeping the vehicle bays clear
-    bases.push({ team, x: 0, z: Z(60), hx: 76, hz: 56 });
-    spawns[team] = [...spawnRow(-24, Z(12), 24, Z(12), 8), ...spawnRow(-24, Z(20), 24, Z(20), 8)];
-    const vy = sz < 0 ? Math.PI : 0; vehicles.push({ x: -34, z: Z(100), yaw: vy, type: 'car' }, { x: 34, z: Z(100), yaw: vy, type: 'mech' }, { x: 0, z: Z(96), yaw: vy, type: 'heli' }, { x: 26, z: Z(92), yaw: vy, type: 'tank' });   // a car, a mech, a helicopter and a tank in each base
-    for (const x of [-17, 17]) { W(x, 110, 1.4, 1.4, 2, 'building'); turrets.push({ team, x, y: 2, z: Z(110) }); vehicles.push({ x, z: Z(110), yaw: vy, type: 'turret', y: 2, team, sentry: turrets.length }); }   // a sentry turret on a pedestal either side of the gate; a teammate can take its gun seat (press E at the foot of the pedestal) and it stops firing by itself while someone is in it
-  }
-  // The middle: a three-step rocky hill, climbed by ramps, with the rocket launcher on top.
-  [24, 16, 8].forEach((s, i) => { add(0, 0, s, s, 2, 'mesa', i * 2); for (const d of [-1, 1]) ramps.push({ ...RAMP(0, d * (s + 2.5), 5, 2.5, i * 2, i * 2 + 2, d > 0 ? 'N' : 'S'), nat: 1 }); });
-  ramps.push({ ...RAMP(26.5, 0, 2.5, 5, 0, 2, 'W'), nat: 1 }, { ...RAMP(-26.5, 0, 2.5, 5, 0, 2, 'E'), nat: 1 });
-  pickups.push({ wi: 2, x: 0, y: 7.2, z: 0 });
+    for (let i = 0; i < 10; i++) { const u = between(-60, 60), d = between(52, 112), [x, z] = P(u, d); if (Math.abs(u) > 14 && !(d > 90 && Math.abs(Math.abs(u) - 30) < 8) && free(x, z, 1.5, 1.5)) add(x, z, 1.2, 1.2, 1.2, 'crate'); }   // loose cover in the yard, keeping the vehicle bays clear
+    const [bx, bz] = P(0, 60); bases.push({ team, x: rd(bx), z: rd(bz), hx: zz ? 76 : 56, hz: zz ? 56 : 76 });
+    const row = (d, n) => spawnRow(...P(-24, d), ...P(24, d), n).map(s => ({ ...s, yaw: rd(vy) })); spawns[team] = [...row(12, 8), ...row(20, 8)];
+    const veh = (u, d, type, extra = {}) => { const [x, z] = P(u, d); vehicles.push({ x: rd(x), z: rd(z), yaw: rd(vy), type, ...extra }); };
+    veh(-34, 100, 'car'); veh(34, 100, 'mech'); veh(0, 96, 'heli'); veh(26, 92, 'tank');   // a car, a mech, a helicopter and a tank in each base
+    for (const u of [-17, 17]) { W(u, 110, 1.4, 1.4, 2, 'building'); const [x, z] = P(u, 110); turrets.push({ team, x: rd(x), y: 2, z: rd(z) }); veh(u, 110, 'turret', { y: 2, team, sentry: turrets.length }); }   // a sentry turret on a pedestal either side of the gate; a teammate can take its gun seat (press E at the foot of the pedestal) and it stops firing by itself while someone is in it
+  };
+  for (const [team, ax, sign, back, lat] of c.bases) addBase(team, ax, sign, back, lat);
+  // Hills with the rocket launcher on the first one: a three-step rocky hill, climbed by ramps.
+  c.mounts.forEach(([cx, cz], k) => {
+    [24, 16, 8].forEach((s, i) => { add(cx, cz, s, s, 2, 'mesa', i * 2); for (const d of [-1, 1]) ramps.push({ ...RAMP(cx, rd(cz + d * (s + 2.5)), 5, 2.5, i * 2, i * 2 + 2, d > 0 ? 'N' : 'S'), nat: 1 }); });
+    ramps.push({ ...RAMP(rd(cx + 26.5), cz, 2.5, 5, 0, 2, 'W'), nat: 1 }, { ...RAMP(rd(cx - 26.5), cz, 2.5, 5, 0, 2, 'E'), nat: 1 });
+    if (!k) pickups.push({ wi: 2, x: cx, y: 7.2, z: cz });
+  });
+  // The edge of the world: cliff walls the height of the helicopter ceiling all the way round the outline.
+  const rimLine = (x0, z0, x1, z1) => {   // one straight edge: cliff blocks just outside it
+    const horiz = z0 === z1, len = Math.abs(horiz ? x1 - x0 : z1 - z0), n = Math.max(1, Math.round(len / 30)), mx = (x0 + x1) / 2, mz = (z0 + z1) / 2;
+    const nx = horiz ? 0 : (S.inside(mx - 10, mz) ? 1 : -1), nz = horiz ? (S.inside(mx, mz - 10) ? 1 : -1) : 0;   // the side that is not inside
+    for (let i = 0; i < n; i++) { const t = (i + .5) / n, px = x0 + (x1 - x0) * t, pz = z0 + (z1 - z0) * t, hl = len / n / 2 + 7; if (horiz) add(px, z0 + nz * 7, hl, 7, between(BH - 4, BH), 'cliff'); else add(x0 + nx * 7, pz, 7, hl, between(BH - 4, BH), 'cliff'); }
+  };
+  const rimRing = (cx, cz, r, side) => { const rc = side === 'out' ? r + 14 : r - 14, n = Math.round(2 * Math.PI * rc / 18); for (let i = 0; i < n; i++) { const a = i / n * 6.2832; add(cx + rc * Math.cos(a), cz + rc * Math.sin(a), 14, 14, between(BH - 4, BH), 'cliff'); } };
+  for (const e of S.edges || []) rimLine(...e);
+  for (const r of S.rings || []) rimRing(...r);
   // Landscape pieces. Each one only goes down where there is room, so a failed try just leaves open ground.
-  const mesa = (x, z, big) => {   // a flat-topped plateau with a sniper rifle on top, reached by up to two long ramps
+  const mesa = (x, z, big) => {   // a flat-topped plateau reached by up to two long ramps
     const hx = big ? between(14, 24) : between(9, 17), hz = big ? between(12, 20) : between(8, 14), h = Math.round(between(4, 8) * 2) / 2, b = put(x, z, hx, hz, h, 'mesa', 0, 9); if (!b) return false;
     const s0 = Math.floor(R() * 4); let n = 0;
     for (let i = 0; i < 4 && n < 2; i++) if (lean(b, 'NSEW'[(s0 + i) % 4], h * 3.2, 3.5)) n++;
@@ -341,12 +366,12 @@ function buildWild(c) {
   };
   const ridge = (x, z) => { const f = R() < .5, len = between(14, 34), t = between(1.6, 2.8); put(x, z, f ? t : len / 2, f ? len / 2 : t, between(4.5, 8.5), 'cliff', 0, 4); };
   const canyon = (cx, cz) => {   // two cliff walls with gaps, a lane between them, and boulders to hide behind
-    const f = R() < .5, ax = f ? 12 : 27, az = f ? 27 : 12; if (keep(cx, cz, ax, az) || !inside(cx, cz, ax, az)) return;
+    const f = R() < .5, ax = f ? 12 : 27, az = f ? 27 : 12; if (keep(cx, cz, ax, az) || !fits(cx, cz, ax, az)) return;
     for (const s of [-1, 1]) for (const [a, e] of [[-26, -10], [-6, 8], [12, 26]]) { const m = (a + e) / 2, hl = (e - a) / 2; put(f ? cx + s * 9 : cx + m, f ? cz + m : cz + s * 9, f ? 2.2 : hl, f ? hl : 2.2, between(5, 8.5), 'cliff', 0, 1); }
     for (let i = 0; i < 4; i++) { const t = between(-20, 20), o = between(-4, 4); put(f ? cx + o : cx + t, f ? cz + t : cz + o, 1.2, 1.2, between(1.2, 2.2), 'rock', 0, 1.5); }
   };
   const crater = (cx, cz, r) => {   // a ring of rock with two gaps to get in by, and a few boulders inside
-    if (keep(cx, cz, r + 4, r + 4) || !inside(cx, cz, r + 4, r + 4) || !free(cx, cz, r + 3, r + 3, 2)) return;
+    if (keep(cx, cz, r + 4, r + 4) || !fits(cx, cz, r + 4, r + 4) || !free(cx, cz, r + 3, r + 3, 2)) return;
     const n = Math.round(Math.PI * 2 * r / 5.4), ph = R() * 6.283;
     for (let i = 0; i < n; i++) { const a = i / n * 6.283; if (Math.cos(2 * a + ph) > .8) continue; add(cx + r * Math.cos(a), cz + r * Math.sin(a), 2.6, 2.6, between(1.8, 3.4), 'rock'); }
     for (let i = 0; i < 3; i++) put(cx + between(-r * .5, r * .5), cz + between(-r * .5, r * .5), 1.2, 1.2, between(1, 1.8), 'rock', 0, 1.5);
@@ -358,28 +383,29 @@ function buildWild(c) {
   };
   const ruin = (x, z) => {   // four broken walls round an old courtyard, open at the corners, with a standing stone in the middle
     const hl = between(5, 8), g = hl + 3, h = between(2.8, 4);
-    if (keep(x, z, g + 2, g + 2) || !inside(x, z, g + 2, g + 2) || !free(x, z, g + 1, g + 1, 2)) return;
+    if (keep(x, z, g + 2, g + 2) || !fits(x, z, g + 2, g + 2) || !free(x, z, g + 1, g + 1, 2)) return;
     add(x, z - g, hl, .9, h, 'cliff'); add(x, z + g, hl, .9, h * .8, 'cliff'); add(x - g, z, .9, hl, h * .9, 'cliff'); add(x + g, z, .9, hl, h * 1.1, 'cliff'); add(x, z, 1.4, 1.4, h * 1.4, 'rock');
   };
   const grove = (x, z) => { const [kind, hx, h0, h1, n] = c.tree; for (let i = 0; i < n; i++) put(x + between(-16, 16), z + between(-16, 16), hx, hx, between(h0, h1), kind, 0, 3.2); };
-  for (const [sx, sz] of [[-130, -60], [130, 60], [-130, 60], [130, -60]]) for (let t = 0; t < 40; t++) if (spire(sx + between(-30, 30), sz + between(-35, 35), 15)) break;   // the four tallest spires carry gun nests (added below)
-  if (c.valley) for (const s of [-1, 1]) for (const [a, e] of [[-290, -222], [-198, -134], [-110, -52], [-28, 38], [62, 126], [150, 214], [238, 290]]) put(s * 114 + between(-5, 5), (a + e) / 2, between(4, 6), (e - a) / 2, between(15, 21), 'cliff', 0, 1);   // sheer valley walls along both sides, with passes through
+  for (const [sx, sz] of c.nests) for (let t = 0; t < 80; t++) if (spire(sx + between(-25, 25), sz + between(-25, 25), 15)) break;   // the four tallest spires carry gun nests (added below)
+  if (c.valley) for (const s of [-1, 1]) for (let x0 = -S.ex + 20; x0 < S.ex - 60; x0 += 84) put(x0 + 32 + between(-4, 4), s * 114 + between(-5, 5), 32, between(4, 6), between(15, 21), 'cliff', 0, 1);   // sheer valley walls along both sides, with passes through
   if (c.diag) { diag(-215, -135, 215, 135); diag(-215, 135, 215, -135); }   // two ice ridges crossing in the middle
-  if (c.grid) for (const gx of [-250, -150, -50, 50, 150, 250]) for (const gz of [-130, -45, 45, 130]) mesa(gx + between(-12, 12), gz + between(-8, 8), true);   // canyon country: a grid of big mesas with lanes between them
-  for (let i = 0, n = 0; n < c.mesas && i < 120; i++) if (mesa(between(-250, 250), between(-135, 135))) n++;
-  for (let i = 0; i < (c.ruins || 0); i++) ruin(between(-250, 250), between(-140, 140));
-  for (let i = 0; i < c.canyons; i++) canyon(between(-230, 230), between(-120, 120));
-  for (let i = 0; i < (c.craters || 0); i++) crater(between(-220, 220), between(-130, 130), between(16, 28));
-  for (let i = 0; i < c.groves; i++) grove(between(-270, 270), between(-270, 270));
-  for (let i = 0, n = 0; n < c.mounds && i < c.mounds * 8; i++) if (mound(between(-270, 270), between(-270, 270))) n++;
-  for (let i = 0; i < c.ridges; i++) ridge(between(-280, 280), between(-280, 280));
-  for (let i = 0; i < c.spires; i++) spire(between(-280, 280), between(-280, 280), Math.round(between(8, 13)));
-  for (let i = 0; i < c.rocks; i++) outcrop(between(-285, 285), between(-285, 285));
-  for (let i = 0; i < c.low; i++) put(between(-285, 285), between(-285, 285), between(.7, 1.5), between(.7, 1.5), between(.8, 1.5), 'rock', 0, 2);   // low boulders: cover you have to jump
-  for (let i = 0, n = 0; n < 2 && i < 80; i++) { const x = between(-120, 120), z = between(-100, 100); if (Math.hypot(x, z) > 40 && free(x, z, 3, 4, 4)) { vehicles.push({ x: rd(x), z: rd(z), yaw: rd(between(-3, 3)), type: 'car' }); n++; } }   // two spare cars in the field
+  if (c.grid) for (let gx = -300; gx <= 300; gx += 115) for (let gz = -300; gz <= 300; gz += 115) mesa(gx + between(-12, 12), gz + between(-12, 12), true);   // canyon country: a grid of big mesas with lanes between them
+  for (let i = 0, n = 0; n < c.mesas && i < 160; i++) if (mesa(rx(), rz())) n++;
+  for (let i = 0; i < rep(c.ruins || 0); i++) ruin(rx(), rz());
+  for (let i = 0; i < rep(c.canyons); i++) canyon(rx(), rz());
+  for (let i = 0; i < rep(c.craters || 0); i++) crater(rx(), rz(), between(16, 28));
+  for (let i = 0; i < rep(c.groves); i++) grove(rx(), rz());
+  for (let i = 0, n = 0; n < c.mounds && i < c.mounds * 10; i++) if (mound(rx(), rz())) n++;
+  for (let i = 0; i < rep(c.ridges); i++) ridge(rx(), rz());
+  for (let i = 0; i < rep(c.spires); i++) spire(rx(), rz(), Math.round(between(8, 13)));
+  for (let i = 0; i < rep(c.rocks); i++) outcrop(rx(), rz());
+  for (let i = 0; i < rep(c.low); i++) put(rx(), rz(), between(.7, 1.5), between(.7, 1.5), between(.8, 1.5), 'rock', 0, 2);   // low boulders: cover you have to jump
+  const [mx0, mz0] = c.mounts[0], farFromBases = (x, z, d) => bases.every(b => Math.hypot(x - b.x, z - b.z) > d);
+  for (let i = 0, n = 0; n < 2 && i < 200; i++) { const x = mx0 + between(-150, 150), z = mz0 + between(-150, 150); if (fits(x, z, 3, 4) && c.mounts.every(([a, b]) => Math.hypot(x - a, z - b) > 45) && farFromBases(x, z, 120) && free(x, z, 3, 4, 4)) { vehicles.push({ x: rd(x), z: rd(z), yaw: rd(between(-3, 3)), type: 'car' }); n++; } }   // two spare cars in the field
   // Hidden weapons: a few power weapons tucked into nooks, spots with rock close on two or three sides, far from the bases and from each other (one gun per 110 m or so).
-  { const cand = []; for (let t = 0; t < 6000; t++) {
-      const x = between(-280, 280), z = between(-165, 165); if (!free(x, z, 1.2, 1.2, 1.2) || Math.hypot(x, z) < 45) continue;
+  { const cand = []; for (let t = 0; t < 9000; t++) {
+      const x = rx(), z = rz(); if (!fits(x, z, 1.2, 1.2) || !free(x, z, 1.2, 1.2, 1.2) || !farFromBases(x, z, 110) || c.mounts.some(([a, b]) => Math.hypot(x - a, z - b) < 45)) continue;
       const wall = (dx, dz) => blocks.some(b => b.h >= 1.8 && (b.y || 0) < 1 && Math.abs(x + dx - b.x) < b.hx && Math.abs(z + dz - b.z) < b.hz);
       const closed = [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([dx, dz]) => wall(dx * 3, dz * 3) || wall(dx * 5.5, dz * 5.5)).length;
       if (closed <= 3) cand.push({ x, z, closed, r: R() });   // never boxed in on all four sides, so there is always a way in
@@ -387,19 +413,23 @@ function buildWild(c) {
     cand.sort((a, b) => b.closed - a.closed || a.r - b.r);   // the most tucked-away spots first
     const want = 3 + (c.hidden == null ? 5 : c.hidden);
     for (const need of [2, 1, 0]) for (const k of cand) { if (pickups.length >= want) break; if (k.closed >= need && pickups.every(q => Math.hypot(q.x - k.x, q.z - k.z) > 110)) pickups.push({ wi: 0, x: rd(k.x), y: 1.2, z: rd(k.z) }); } }   // nooks first; if a map has too few, the next best spots
-  for (let t = 0; spawns.ffa.length < 20 && t < 3000; t++) { const x = rd(between(-280, 280)), z = rd(between(-165, 165)); if (free(x, z, 1, 1, 3) && spawns.ffa.every(s => Math.hypot(s.x - x, s.z - z) > 40)) spawns.ffa.push(at(x, 0, z)); }
-  const m = {
-    id: c.id, name: c.name, half: 300, theme: c.theme, sky: c.sky, fog: c.fog || [170, 720], sun: true, big: true, ceiling: 0, lights: [], tint: c.tint, accent: c.accent, stars: !!c.stars,
-    ground: 0, bounds: { min: [-300, -2, -300], max: [300, 60, 300], edge: 'wall' }, killZones: [], blocks, ramps, bases, spawns, vehicles, pickups, turrets
+  for (let t = 0; spawns.ffa.length < 20 && t < 6000; t++) { const x = rd(rx()), z = rd(rz()); if (fits(x, z, 3, 3) && !keep(x, z, 3, 3) && free(x, z, 1, 1, 3) && spawns.ffa.every(s => Math.hypot(s.x - x, s.z - z) > 40)) spawns.ffa.push(at(x, 0, z, c.mounts[0])); }
+  return {
+    id: c.id, name: c.name, half: Math.max(S.bx, S.bz), ex: S.bx, ez: S.bz, centre: c.mounts[c.mid || 0], theme: c.theme, sky: c.sky, fog: c.fog || [170, 720], sun: true, big: true, ceiling: 0, lights: [], tint: c.tint, accent: c.accent, stars: !!c.stars,
+    ground: 0, bounds: { min: [-S.bx, -2, -S.bz], max: [S.bx, BH, S.bz], edge: 'wall' }, killZones: [], blocks, ramps, bases, spawns, vehicles, pickups, turrets
   };
-  return c.rot ? rotateMap(m) : m;
 }
-for (const c of [   // five very different places: a misty forest valley, a frozen crossing, canyon country, a cratered moonscape, and open grassland with ruins
-  { id: 'field',    name: 'Emerald Valley',   theme: 'forest', sky: 0xbfe0d2, tint: 0xd9e4de, accent: 0x7ee8a8, fog: [70, 420], seed: 20261101, rot: 1, valley: true, mesas: 0, mounds: 6,  canyons: 0, ridges: 4, rocks: 70,  low: 120, groves: 26, tree: ['tree', .9, 10, 15, 9], spires: 3 },
-  { id: 'glacier',  name: 'Glacier Run',      theme: 'ice',    sky: 0xe6f6ff, tint: 0xeaf4fb, accent: 0x6fd3ff, seed: 20261102, rot: 0, diag: true,   mesas: 4, mounds: 8,  canyons: 0, ridges: 5, rocks: 90,  low: 120, groves: 8,  tree: ['pine', .7, 9, 13, 7],   spires: 9 },
-  { id: 'arena',    name: 'Sunbaked Canyons', theme: 'desert', sky: 0xffd27f, tint: 0xe3c196, accent: 0xff9a4d, seed: 20261103, rot: 1, grid: true,   mesas: 0, mounds: 12, canyons: 3, ridges: 3, rocks: 80,  low: 130, groves: 6,  tree: ['cactus', .6, 3, 5, 3], spires: 4 },
-  { id: 'station',  name: 'Moonrise Craters', theme: 'moon',   sky: 0x1f2d66, tint: 0xb4bdd6, accent: 0xb48cff, seed: 20261104, rot: 0, stars: true, mesas: 4, mounds: 6,  canyons: 3, ridges: 9, rocks: 140, low: 160, groves: 0,  tree: ['tree', .8, 7, 11, 0],   spires: 6, craters: 9 },
-  { id: 'frontier', name: 'Twin Citadels',    theme: 'grass',  sky: 0xc2e7ff, tint: 0xdde5ec, accent: 0x7ec8ff, seed: 20261013, rot: 0,              mesas: 2, mounds: 22, canyons: 0, ridges: 3, rocks: 60,  low: 110, groves: 4,  tree: ['tree', .8, 7, 10, 5],   spires: 4, ruins: 9 }
+for (const c of [   // five very different places, each its own shape: a misty forest valley, a frozen island, canyon country, a cratered moon ring, and open grassland with ruins in a cross
+  { id: 'field',    name: 'Emerald Valley',   theme: 'forest', shape: 'rect', sky: 0xbfe0d2, tint: 0xd9e4de, accent: 0x7ee8a8, fog: [70, 420], seed: 20261101, valley: true, mesas: 0, mounds: 6,  canyons: 0, ridges: 4, rocks: 70,  low: 120, groves: 26, tree: ['tree', .9, 10, 15, 9], spires: 3,
+    bases: [['vanguard', 'x', -1, 371, 0], ['horizon', 'x', 1, 371, 0]], mounts: [[0, 0]], nests: [[-150, 175], [150, -175], [-150, -175], [150, 175]] },
+  { id: 'glacier',  name: 'Glacier Run',      theme: 'ice',    shape: 'disc', sky: 0xe6f6ff, tint: 0xeaf4fb, accent: 0x6fd3ff, seed: 20261102, diag: true,   mesas: 4, mounds: 8,  canyons: 0, ridges: 5, rocks: 90,  low: 120, groves: 8,  tree: ['pine', .7, 9, 13, 7],   spires: 9,
+    bases: [['vanguard', 'z', -1, 316, 0], ['horizon', 'z', 1, 316, 0]], mounts: [[0, 0]], nests: [[-230, 60], [230, -60], [-95, -125], [95, 125]] },
+  { id: 'arena',    name: 'Sunbaked Canyons', theme: 'desert', shape: 'L',    sky: 0xffd27f, tint: 0xe3c196, accent: 0xff9a4d, seed: 20261103, grid: true,   mesas: 0, mounds: 12, canyons: 3, ridges: 3, rocks: 80,  low: 130, groves: 6,  tree: ['cactus', .6, 3, 5, 3], spires: 4,
+    bases: [['vanguard', 'z', 1, 321, -125], ['horizon', 'x', 1, 321, -125]], mounts: [[-125, -125]], nests: [[-270, 150], [40, 225], [150, -270], [235, 35]] },
+  { id: 'station',  name: 'Moonrise Craters', theme: 'moon',   shape: 'ring', sky: 0x1f2d66, tint: 0xb4bdd6, accent: 0xb48cff, seed: 20261104, stars: true, mesas: 4, mounds: 6,  canyons: 3, ridges: 9, rocks: 140, low: 160, groves: 0,  tree: ['tree', .8, 7, 11, 0],   spires: 6, craters: 9,
+    bases: [['vanguard', 'z', -1, 334, 0], ['horizon', 'z', 1, 334, 0]], mounts: [[245, 0], [-245, 0]], nests: [[-200, 140], [200, -140], [-210, -110], [210, 110]] },
+  { id: 'frontier', name: 'Twin Citadels',    theme: 'grass',  shape: 'cross', sky: 0xc2e7ff, tint: 0xdde5ec, accent: 0x7ec8ff, seed: 20261013,              mesas: 2, mounds: 22, canyons: 0, ridges: 3, rocks: 60,  low: 110, groves: 4,  tree: ['tree', .8, 7, 10, 5],   spires: 4, ruins: 9,
+    bases: [['vanguard', 'z', -1, 376, 0], ['horizon', 'z', 1, 376, 0]], mounts: [[0, 0]], nests: [[-300, 20], [300, -20], [-110, -110], [110, 110]] }
 ]) MAPS[c.id] = buildWild(c);
 for (const m of Object.values(MAPS)) {   // manned gun nests on top of the tallest rock spires (or pillars) of every map
   m.vehicles = m.vehicles || [];
@@ -566,11 +596,11 @@ function distToVehicle(v, x, z) {   // ground-plane distance from a point to the
   return Math.hypot(Math.max(Math.abs(dx * c - dz * s) - vd(v).hx, 0), Math.max(Math.abs(dx * s + dz * c) - vd(v).hz, 0));
 }
 function exitSpot(v) {   // first free spot beside the vehicle: right, left, behind, in front. It must be on a floor, clear of walls and kill zones
-  const c = Math.cos(v.yaw), s = Math.sin(v.yaw), lim = map.half - BODY.r;
+  const c = Math.cos(v.yaw), s = Math.sin(v.yaw), limX = (map.ex || map.half) - BODY.r, limZ = (map.ez || map.half) - BODY.r;
   const solid = [...map.blocks.filter(groundBlock), ...map.ramps, ...map.killZones.map(k => ({ x: (k.min[0] + k.max[0]) / 2, z: (k.min[2] + k.max[2]) / 2, hx: (k.max[0] - k.min[0]) / 2, hz: (k.max[2] - k.min[2]) / 2 }))];
   for (const [lx, lz] of [[vd(v).hx + 1, 0], [-vd(v).hx - 1, 0], [0, vd(v).hz + 1], [0, -vd(v).hz - 1]]) {
     const x = v.x + lx * c + lz * s, z = v.z - lx * s + lz * c;
-    if (Math.abs(x) <= lim && Math.abs(z) <= lim && surfaceY(map, x, z, .1) > -.05 && !solid.some(b => Math.abs(x - b.x) < b.hx + BODY.r && Math.abs(z - b.z) < b.hz + BODY.r)) return { x, z };
+    if (Math.abs(x) <= limX && Math.abs(z) <= limZ && surfaceY(map, x, z, .1) > -.05 && !solid.some(b => Math.abs(x - b.x) < b.hx + BODY.r && Math.abs(z - b.z) < b.hz + BODY.r)) return { x, z };
   }
   return { x: v.x, z: v.z };
 }
@@ -665,7 +695,7 @@ function validateMap(m) {
     if (pts.length < need[name]) bad.push(name + ' needs at least ' + need[name] + ' spawn points (has ' + pts.length + ')');
     pts.forEach((s, i) => {
       const tag = name + '#' + i;
-      if (!inBox(s.x, s.y + 1, s.z) || (b.edge === 'wall' && (Math.abs(s.x) > m.half - R || Math.abs(s.z) > m.half - R))) bad.push(tag + ' is outside the boundary');
+      if (!inBox(s.x, s.y + 1, s.z) || (b.edge === 'wall' && (Math.abs(s.x) > (m.ex || m.half) - R || Math.abs(s.z) > (m.ez || m.half) - R))) bad.push(tag + ' is outside the boundary');
       if (Math.abs(surfaceY(m, s.x, s.z, s.y + .05) - s.y) > .05) bad.push(tag + ' is not standing on a floor');
       for (const k of m.blocks) if (Math.abs(s.x - k.x) < k.hx + R && Math.abs(s.z - k.z) < k.hz + R && (k.y || 0) + k.h > s.y + .05 && (k.y || 0) < s.y + BODY.h) bad.push(tag + ' is inside a ' + k.kind);
       for (const r of m.ramps) if (Math.abs(s.x - r.x) < r.hx + R && Math.abs(s.z - r.z) < r.hz + R) bad.push(tag + ' is on a ramp');
@@ -808,9 +838,9 @@ const NAV = new Map(), DI = [1, -1, 0, 0, 1, 1, -1, -1], DJ = [0, 0, 1, -1, 1, -
 function navFor(m, wide) {
   if (m.ground == null) return null;   // floating deck maps have several levels: bots steer by sight there
   const key = m.id + (wide ? 'w' : ''); if (NAV.has(key)) return NAV.get(key);
-  const cs = m.big ? 4 : 2, n = Math.ceil(m.half * 2 / cs), org = -m.half, rad = wide ? 2.8 : BODY.r + .3, edge = m.half - 1.5 - (wide ? 1.5 : 0), W = new Uint8Array(n * n);
+  const cs = m.big ? 4 : 2, n = Math.ceil(m.half * 2 / cs), org = -m.half, rad = wide ? 2.8 : BODY.r + .3, edgeX = (m.ex || m.half) - 1.5 - (wide ? 1.5 : 0), edgeZ = (m.ez || m.half) - 1.5 - (wide ? 1.5 : 0), W = new Uint8Array(n * n);
   for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
-    const x = org + (i + .5) * cs, z = org + (j + .5) * cs; let ok = Math.abs(x) < edge && Math.abs(z) < edge;
+    const x = org + (i + .5) * cs, z = org + (j + .5) * cs; let ok = Math.abs(x) < edgeX && Math.abs(z) < edgeZ;
     if (ok) for (const k of m.blocks) { const y0 = k.y || 0; if (y0 < 1.8 && y0 + k.h > 1.3 && Math.abs(x - k.x) < k.hx + rad && Math.abs(z - k.z) < k.hz + rad) { ok = false; break; } }
     if (ok) for (const k of m.killZones) if (x >= k.min[0] - 1 && x <= k.max[0] + 1 && z >= k.min[2] - 1 && z <= k.max[2] + 1) ok = false;
     W[j * n + i] = ok ? 1 : 0;
@@ -882,7 +912,7 @@ function botSees(p, q, eye, facing, skill, tracked) {
   const look = cast(p, eye, { x: dx / d, y: dy / d, z: dz / d }, d);
   return look.who === q || look.t >= d - 1;
 }
-const roamGoal = () => match.hot && Date.now() - match.hot.t < 25000 && Math.random() < .45 ? { x: match.hot.x + (Math.random() - .5) * 30, z: match.hot.z + (Math.random() - .5) * 30 } : Math.random() < .3 ? { x: 0, z: 0 } : randOf(map.spawns.ffa);   // with nothing in sight: head for where a fight was just seen in the kill feed, the middle, or a spawn area
+const roamGoal = () => match.hot && Date.now() - match.hot.t < 25000 && Math.random() < .45 ? { x: match.hot.x + (Math.random() - .5) * 30, z: match.hot.z + (Math.random() - .5) * 30 } : Math.random() < .3 ? { x: (map.centre || [0, 0])[0], z: (map.centre || [0, 0])[1] } : randOf(map.spawns.ffa);   // with nothing in sight: head for where a fight was just seen in the kill feed, the middle, or a spawn area
 function botGun(p, v, now) {   // on a pillar gun or a car's roof gun: swing at the nearest enemy it can see and fire in bursts
   const w = VWEAPONS[p.seat ? 'cargun' : 'turret'], o = { x: v.x, y: (v.y || 0) + (p.seat ? 2.4 : 1.3), z: v.z }, skill = p.skill ?? (p.skill = botSkill(p.lv));
   let tgt = null, best = w.range;
@@ -1085,7 +1115,7 @@ function tickTurrets(now) {   // a turret sweeps its scanner dome; anything host
 }
 function vehBlocked(v, x, z) {   // a ground vehicle or mech cannot drive through walls or off the map
   const r = vd(v).hx + .4;
-  if (Math.abs(x) > map.half - 3 || Math.abs(z) > map.half - 3) return true;
+  if (Math.abs(x) > (map.ex || map.half) - 3 || Math.abs(z) > (map.ez || map.half) - 3) return true;
   for (const k of map.blocks) if ((k.y || 0) < 2 && (k.y || 0) + k.h > .3 && Math.abs(x - k.x) < k.hx + r && Math.abs(z - k.z) < k.hz + r) return true;
   return false;
 }
@@ -1111,7 +1141,7 @@ function botDrive(p, now, dt) {
   const nx = v.x - Math.sin(v.yaw) * sp * dt, nz = v.z - Math.cos(v.yaw) * sp * dt;
   if (v.type === 'heli' || !vehBlocked(v, nx, nz)) { v.x = nx; v.z = nz; p.stuck = 0; } else { v.yaw = r3(wrap(v.yaw + .5)); p.stuck++; }   // blocked: swing away
   if (v.type === 'heli') v.y = Math.min(22, (v.y || 0) + 6 * dt);
-  const lim = map.half - T.hx; v.x = r2(clamp(v.x, -lim, lim)); v.z = r2(clamp(v.z, -lim, lim)); v.speed = sp; v.dirty = true;
+  const limX = (map.ex || map.half) - T.hx, limZ = (map.ez || map.half) - T.hx; v.x = r2(clamp(v.x, -limX, limX)); v.z = r2(clamp(v.z, -limZ, limZ)); v.speed = sp; v.dirty = true;
   p.x = v.x; p.y = v.y || 0; p.z = v.z; p.yaw = v.yaw;
   if (!tgt || !w || flat > w.range * .9 || Math.abs(wrap(want - v.yaw)) > .25 || now < p.nextShot || (v.type === 'heli' && v.y < 15)) return;
   const side = v.type === 'mech' ? (now / 45 & 1 ? 1 : -1) * 1.1 : 0, c = Math.cos(v.yaw), s = Math.sin(v.yaw);
@@ -1259,8 +1289,8 @@ function connect(socket, room) {
     if (![d.x, d.z, d.yaw, d.speed].every(n => typeof n === 'number' && Number.isFinite(n))) return;
     me.lastVeh = now;
     if (v.type === 'turret') { v.yaw = r3(wrap(d.yaw)); if (Number.isFinite(d.pitch)) me.pitch = r3(clamp(d.pitch, -1.2, 1.2)); me.x = v.x; me.z = v.z; me.y = v.sy; v.dirty = true; return; }   // a pillar gun only turns
-    const T = vd(v), lim = map.half - T.hx;
-    v.x = r2(clamp(d.x, -lim, lim)); v.z = r2(clamp(d.z, -lim, lim)); v.yaw = r3(wrap(d.yaw)); v.speed = r2(clamp(d.speed, -T.maxReverse, T.maxSpeed));
+    const T = vd(v), limX = (map.ex || map.half) - T.hx, limZ = (map.ez || map.half) - T.hx;
+    v.x = r2(clamp(d.x, -limX, limX)); v.z = r2(clamp(d.z, -limZ, limZ)); v.yaw = r3(wrap(d.yaw)); v.speed = r2(clamp(d.speed, -T.maxReverse, T.maxSpeed));
     v.y = v.type === 'heli' && Number.isFinite(d.y) ? r2(clamp(d.y, 0, map.bounds.max[1] - 4)) : 0;   // only helicopters leave the ground
     me.x = v.x; me.z = v.z; me.y = v.y; v.dirty = true;
   });
