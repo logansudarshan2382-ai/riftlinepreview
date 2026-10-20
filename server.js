@@ -59,6 +59,12 @@ const VTYPES = {   // vehicle classes: footprint, height and speed limits (m/s).
   turret: { hx: 1.4, hz: 1.4, h: 1, maxSpeed: 0, maxReverse: 0 }    // a manned gun nest on top of a pillar: it never moves, the footprint is where you climb out
 };
 const vd = v => VTYPES[v.type] || VTYPES.car;
+// Vehicle armour. Shots that hit a vehicle now wear down the vehicle, not the person inside, until it blows up. `hp` is its hit points; light / mid / heavy is the share of a shot's damage that gets through,
+// by the weight of the weapon: light = rifles, SMGs, pistols, shotgun pellets, minigun; mid = sniper rifles, magnums, marksman rifles (26+ damage a shot); heavy = launchers, grenades, anti-materiel and rail rifles, vehicle cannons.
+// The mech is well armoured but has a weak spot: its glowing reactor on the upper back takes triple damage and ignores its armour. Gun nests on pillars and base sentry seats are not vehicles in this sense and cannot be destroyed.
+const VARM = { car: { hp: 450, light: .4, mid: .6, heavy: 1 }, tank: { hp: 1000, light: .08, mid: .2, heavy: .85 }, heli: { hp: 600, light: .4, mid: .65, heavy: 1 }, mech: { hp: 1100, light: .22, mid: .42, heavy: .7, weak: 3 } };
+const VEH_RESPAWN_MS = 60000;   // a wreck stays as cover for a minute, then the vehicle is back where it started
+const weightOf = w => (w.splash && w.splash.damage >= 40) || w.damage >= 70 || (w.pierce || 0) >= 2 ? 'heavy' : w.damage >= 26 ? 'mid' : 'light';
 const VWEAPONS = {   // what a driver's left click fires. Helicopter rockets are slow; the mech's miniguns heat up (+2.2 a shot, cooling 18 a second, locked for 2.5 s at 100)
   heli: { damage: 100, headshotMultiplier: 1, fireRateDelay: 1400, range: 300, splash: { radius: 8, damage: 90 } },
   mech: { damage: 5, headshotMultiplier: 1, fireRateDelay: 45, range: 120, heat: 2.2 },
@@ -485,7 +491,7 @@ const MELEE_DMG = 40, MELEE_RANGE = 2.6;
 const pub = p => ({ id: p.id, name: p.name, lv: lvOf(p), faction: p.faction, kills: p.kills, deaths: p.deaths, alive: p.alive, x: p.x, y: p.y, z: p.z, yaw: p.yaw, pitch: p.pitch, skin: { body: profOf(p).eq.body, weapon: profOf(p).eq.weapon, frame: profOf(p).eq.frame } });
 const matchInfo = () => ({ mode: match.mode, limit: LIMIT[match.mode], state: match.state, team: match.team, map: map.name, left: match.state === 'live' && match.endsAt ? Math.max(0, match.endsAt - Date.now()) : 0 });
 const sendScores = () => emit('scores', { t: match.team, p: [...players.values()].map(p => [p.id, p.kills, p.deaths, lvOf(p)]) });
-const vehRows = () => vehicles.map(v => [v.id, r2(v.x), r2(v.z), r3(v.yaw), v.driver ? v.driver.id : 0, r2(v.y || 0), v.gunner ? v.gunner.id : 0]);
+const vehRows = () => vehicles.map(v => [v.id, r2(v.x), r2(v.z), r3(v.yaw), v.driver ? v.driver.id : 0, r2(v.y || 0), v.gunner ? v.gunner.id : 0, VARM[v.type] ? Math.max(0, Math.round(100 * v.hp / VARM[v.type].hp)) : 100, v.dead ? 1 : 0]);   // ... then health as a percentage, and whether it is a wreck
 function profileView(p) {
   const pr = profOf(p), lv = levelInfo(pr.xp);
   return { xp: pr.xp, level: lv.level, into: lv.into, need: lv.need, coins: pr.coins, kills: pr.kills, owned: pr.owned, eq: pr.eq, save: sign(p.token, pr) };
@@ -626,9 +632,9 @@ function cast(shooter, o, d, range) {
   }
   for (const r of map.ramps) { const t = rayRamp(o, d, r); if (t !== null && t < best.t) best = { t, who: null }; }
   for (const v of vehicles) {
-    if (v.driver === shooter) continue;   // never shoot your own vehicle
+    if (v.driver === shooter || v.gunner === shooter) continue;   // never shoot your own vehicle
     const t = rayVehicle(o, d, v);
-    if (t !== null && t < best.t) best = { t, who: v.driver && v.driver !== shooter && !friend(v.driver) ? v.driver : null };
+    if (t !== null && t < best.t) best = { t, who: null, veh: v };   // the vehicle takes the hit (see applyHit); a wreck still stops bullets
   }
   const when = Date.now() - Math.min(400, shooter.rtt + 100);   // round trip plus the 100 ms clients draw others in the past
   for (const p of players.values()) {
@@ -640,21 +646,27 @@ function cast(shooter, o, d, range) {
   return best;
 }
 
+function seatFor(v, x, z) {   // which seat of a car a person standing at x, z can take (null if both are taken). With nobody aboard you choose by where you stand: the back of the car is the roof gun, the front and sides are the wheel.
+  if (v.driver) return v.gunner ? null : 'g';
+  if (v.gunner) return 'd';   // the gun is manned, the wheel is free
+  return (x - v.x) * -Math.sin(v.yaw) + (z - v.z) * -Math.cos(v.yaw) < -.6 ? 'g' : 'd';
+}
 function leaveVehicle(p, notify) {
   const v = vehicles.find(x => x.id === p.vehicle);
   p.vehicle = 0; p.seat = 0;
   if (!v) return;
   if (v.gunner === p) v.gunner = null;   // a roof gunner steps off and the driver carries on
-  else { v.driver = null; v.speed = 0; v.y = v.sy || 0; if (v.gunner) leaveVehicle(v.gunner, true); }   // an empty helicopter settles; a gunner is put out with the driver
+  else { v.driver = null; v.speed = 0; v.y = v.sy || 0; }   // an empty helicopter settles. A roof gunner stays on the gun of the parked car
   if (notify) { const s = exitSpot(v); p.x = s.x; p.z = s.z; p.y = 0; p.sock.emit('undrive', { x: s.x, z: s.z }); }
   emit('vehicles', vehRows());
 }
 
 function hurt(shooter, target, dmg, head, how) {
+  const dealt = Math.max(0, Math.min(dmg, target.hp));   // points for the yellow popup: what the target really lost, so a 9999 blast on a 40 hp player scores 40
   target.hp -= dmg;
   if (target.bot && shooter && shooter !== target) { target.hitBy = shooter; target.hitAt = Date.now(); }   // a bot that is shot knows which way it came from (a damage marker, not a sound)
   const dead = target.hp <= 0;
-  shooter.sock.emit('hit', { kill: dead, head: !!head });
+  shooter.sock.emit('hit', { kill: dead, head: !!head, dmg: shooter === target ? 0 : Math.round(dealt), how: how || '' });   // dmg feeds the yellow score popups (0 = your own blast, no points)
   if (!dead) { emitYou(target); return; }
   target.hp = 0; target.alive = false; target.deaths++; shooter.kills++; target.respawnAt = Date.now() + RESPAWN_MS; target.reloadEnd = 0;
   if (target.vehicle) leaveVehicle(target, false);
@@ -663,7 +675,7 @@ function hurt(shooter, target, dmg, head, how) {
   grant(shooter, XP_PER_KILL, COINS_PER_KILL, 'kill');
   match.hot = { x: target.x, z: target.z, t: Date.now() };   // where the last fight was, for bots with nothing in sight
   emitYou(target);
-  emit('kill', { k: shooter.id, v: target.id, kn: shooter.name, vn: target.name, kf: shooter.faction, vf: target.faction, kl: lvOf(shooter), vl: lvOf(target), hs: !!head, how: how || '', r: RESPAWN_MS });
+  emit('kill', { k: shooter.id, v: target.id, kn: shooter.name, vn: target.name, kf: shooter.faction, vf: target.faction, kl: lvOf(shooter), vl: lvOf(target), hs: !!head, how: how || '', r: RESPAWN_MS, xp: XP_PER_KILL });
   sendScores();
   if (match.mode === 'tdm' && match.team[shooter.faction] >= LIMIT.tdm) endMatch(shooter.faction.toUpperCase() + ' WINS', shooter.faction, [...players.values()].filter(p => p.faction === shooter.faction));
   else if (match.mode === 'ffa' && shooter.kills >= LIMIT.ffa) endMatch(shooter.name + ' WINS', 'ffa', [shooter]);
@@ -739,7 +751,7 @@ function startMatch(mode, mapId) {
   clearTimeout(nextTimer);
   map = MAPS[mapId] || map;
   match.mode = mode; match.state = 'live'; match.team = { vanguard: 0, horizon: 0 }; match.endsAt = Date.now() + MATCH_MS;
-  vehicles = vehDefs(map).map((d, i) => ({ id: i + 1, team: d.team || null, sentry: d.sentry || 0, type: d.type || 'car', x: d.x, y: d.y || 0, sy: d.y || 0, z: d.z, yaw: d.yaw, speed: 0, driver: null, gunner: null, dirty: false, heat: 0, lockUntil: 0 }));
+  vehicles = vehDefs(map).map((d, i) => ({ id: i + 1, team: d.team || null, sentry: d.sentry || 0, type: d.type || 'car', x: d.x, y: d.y || 0, sy: d.y || 0, z: d.z, yaw: d.yaw, speed: 0, driver: null, gunner: null, dirty: false, heat: 0, lockUntil: 0, hp: (VARM[d.type || 'car'] || { hp: 0 }).hp, dead: false, deadAt: 0, home: { x: d.x, y: d.y || 0, z: d.z, yaw: d.yaw } }));
   for (const p of players.values()) p.vehicle = 0;
   const list = [...players.values()].sort(() => Math.random() - .5), flip = Math.random() < .5 ? 1 : 0;   // random split into teams
   list.forEach((p, i) => { p.kills = p.deaths = 0; p.faction = mode === 'tdm' ? ((i + flip) % 2 ? 'horizon' : 'vanguard') : 'ffa'; });
@@ -891,7 +903,7 @@ function routeStep(st, nav, x, z, gx, gz, now) {   // the next point to walk to:
   return st.path[st.i];
 }
 // ---- bots and rides: a free vehicle or pillar gun, or the roof gun of a friendly car that already has a driver ----
-const botCanUse = (p, v) => v.type === 'turret' ? !v.driver && (!v.team || match.mode !== 'tdm' || v.team === p.faction) : !v.driver ? true : v.type === 'car' && !v.gunner && v.driver !== p && (match.mode !== 'tdm' || v.driver.faction === p.faction);
+const botCanUse = (p, v) => v.dead ? false : v.type === 'turret' ? !v.driver && (!v.team || match.mode !== 'tdm' || v.team === p.faction) : v.type === 'car' ? (!v.driver || !v.gunner) && (match.mode !== 'tdm' || !v.driver || v.driver.faction === p.faction) && (match.mode !== 'tdm' || !v.gunner || v.gunner.faction === p.faction) : !v.driver;
 function botPickVehicle(p) {
   let best = null, bd = 90;
   for (const v of vehicles) { if (!botCanUse(p, v)) continue; const d = Math.hypot(v.x - p.x, v.z - p.z) * (v.type === 'turret' ? .8 : 1); if (d < bd) { bd = d; best = v; } }
@@ -910,7 +922,7 @@ function botSees(p, q, eye, facing, skill, tracked) {
   if (d > 60 + 90 * skill) return false;
   if (Math.abs(wrap(Math.atan2(-dx, -dz) - facing)) > (tracked ? 1.9 : .9 + .45 * skill)) return false;
   const look = cast(p, eye, { x: dx / d, y: dy / d, z: dz / d }, d);
-  return look.who === q || look.t >= d - 1;
+  return look.who === q || look.t >= d - 1 || (look.veh && look.veh.id === q.vehicle);
 }
 const roamGoal = () => match.hot && Date.now() - match.hot.t < 25000 && Math.random() < .45 ? { x: match.hot.x + (Math.random() - .5) * 30, z: match.hot.z + (Math.random() - .5) * 30 } : Math.random() < .3 ? { x: (map.centre || [0, 0])[0], z: (map.centre || [0, 0])[1] } : randOf(map.spawns.ffa);   // with nothing in sight: head for where a fight was just seen in the kill feed, the middle, or a spawn area
 function botGun(p, v, now) {   // on a pillar gun or a car's roof gun: swing at the nearest enemy it can see and fire in bursts
@@ -1011,7 +1023,7 @@ function botTick(now) {
     const w = W(p), o = { x: p.x, y: p.y + BODY.eye, z: p.z }, u = { x: dx / dist, y: dy / dist, z: dz / dist };
     if (dist > w.range) continue;
     if (p.ammos[p.wi] <= 0) { if (p.reserve[p.wi] <= 0 && p.wi) p.wi = 0; else startReload(p); continue; }   // out of rockets or sniper rounds: back to the rifle
-    const look = cast(p, o, u, dist); if (look.who !== tgt && look.t < dist - 1) continue;   // a wall is in the way: keep running, don't waste bullets
+    const look = cast(p, o, u, dist); if (look.who !== tgt && look.t < dist - 1 && !(look.veh && look.veh.id === tgt.vehicle)) continue;   // a wall is in the way: keep running, don't waste bullets
     if (Math.random() < (1 - skill) * .25) { p.nextShot = now + 120 + Math.random() * 300; continue; }   // weaker bots hesitate and waste time
     const e = (.025 + dist * .0012) * (.12 + 1.9 * Math.pow(1 - skill, 1.3)) * (p.panic ? 1.6 : 1), d = { x: u.x + (Math.random() - .5) * 2 * e, y: u.y + (Math.random() - .5) * 2 * e, z: u.z + (Math.random() - .5) * 2 * e };
     const l = Math.hypot(d.x, d.y, d.z); d.x /= l; d.y /= l; d.z /= l;                        // the random offset: bots do not have perfect aim
@@ -1054,8 +1066,34 @@ function tickPickups(now) {   // map pickups come back, old drops fade away
   if (changed) emit('pk', pickupRows());
 }
 // One shot's damage: a headshot multiplies it, and a rocket also hurts every enemy near the blast (less the further they are; never you or your team).
+function destroyVehicle(v, by) {   // a vehicle at zero hit points blows up: everyone inside dies, people close by are hurt, and it is a wreck until it respawns
+  v.hp = 0; v.dead = true; v.deadAt = Date.now(); v.speed = 0; v.y = v.sy || 0; v.dirty = true;
+  const riders = [v.driver, v.gunner].filter(Boolean); v.driver = null; v.gunner = null;
+  for (const p of riders) { p.vehicle = 0; p.seat = 0; p.x = v.x; p.z = v.z; p.y = v.y; if (p.sock) p.sock.emit('undrive', { x: v.x, z: v.z }); if (p.alive) hurt(by || p, p, 9999, false, 'vehicle'); }
+  for (const q of [...players.values()]) {
+    if (!q.alive || riders.includes(q) || q.vehicle || (by && match.mode === 'tdm' && q.faction === by.faction)) continue;
+    const dd = Math.hypot(q.x - v.x, q.z - v.z); if (dd < 7) hurt(by || q, q, Math.round(70 * (1 - dd / 7)), false);
+  }
+  emit('vexp', { id: v.id, x: r2(v.x), y: r2((v.y || 0) + 1), z: r2(v.z) }); emit('vehicles', vehRows());
+}
+function damageVehicle(v, dmg, by) {   // returns true if this is the shot that destroyed it
+  if (v.dead || !VARM[v.type] || !(dmg > 0)) return false;
+  v.hp -= dmg; v.dirty = true;
+  if (v.hp <= 0) { destroyVehicle(v, by); return true; }
+  return false;
+}
 function applyHit(shooter, hit, o, dir, w, dist) {
-  if (hit.who) {
+  if (hit.veh) {   // armour: the vehicle soaks the shot, scaled by how heavy the weapon is. A mech's upper back is the exception.
+    const v = hit.veh, A = VARM[v.type], friendly = match.mode === 'tdm' && ((v.driver && v.driver.faction === shooter.faction) || (v.gunner && v.gunner.faction === shooter.faction));
+    if (A && !v.dead && !friendly) {
+      const base = w.damage * (w.falloff && dist != null ? falloffMul(w, dist) : 1);
+      let weak = false;
+      if (v.type === 'mech') { const hx = o.x + dir.x * hit.t - v.x, hy = o.y + dir.y * hit.t - (v.y || 0), hz = o.z + dir.z * hit.t - v.z, L = Math.hypot(hx, hz) || 1; weak = (hx * -Math.sin(v.yaw) + hz * -Math.cos(v.yaw)) / L < -.5 && hy > 2 && hy < 4.8; }   // behind it, and high up
+      const vdmg = weak ? base * A.weak : base * A[weightOf(w)], dealt = Math.round(Math.max(0, Math.min(vdmg, v.hp)));   // what the armour really loses
+      const killed = damageVehicle(v, vdmg, shooter);
+      if (shooter.sock) shooter.sock.emit('hit', { kill: killed, head: weak, veh: 1, dmg: dealt });   // a gold marker means you found the weak spot
+    }
+  } else if (hit.who) {
     const dmg = Math.round(w.damage * (w.falloff && dist != null ? falloffMul(w, dist) : 1) * (hit.head ? w.headshotMultiplier : 1) * (w.splash ? 1 - frameOf(hit.who).blast : 1));
     hurt(shooter, hit.who, dmg, hit.head);
     if (w.lifesteal && shooter.alive) { shooter.hp = Math.min(maxHp(shooter), shooter.hp + dmg * w.lifesteal); emitYou(shooter); }   // vampire weapons heal you
@@ -1064,9 +1102,14 @@ function applyHit(shooter, hit, o, dir, w, dist) {
   if (!w.splash) return;
   const x = o.x + dir.x * hit.t, y = o.y + dir.y * hit.t, z = o.z + dir.z * hit.t;
   for (const q of [...players.values()]) {
-    if (q === shooter || q === hit.who || !q.alive || (match.mode === 'tdm' && q.faction === shooter.faction)) continue;
+    if (q === shooter || q === hit.who || !q.alive || q.vehicle || (match.mode === 'tdm' && q.faction === shooter.faction)) continue;   // people inside a vehicle are shielded by it
     const d = Math.hypot(q.x - x, q.y + 1 - y, q.z - z);
     if (d < w.splash.radius) { hurt(shooter, q, Math.round(w.splash.damage * (1 - .7 * d / w.splash.radius) * (1 - frameOf(q).blast)), false); if (w.burn && q.alive) { q.burnUntil = Date.now() + w.burn.secs * 1000; q.burnDps = w.burn.dps; q.burnBy = shooter; } }
+  }
+  for (const v of vehicles) {   // and the blast wears down any vehicle it reaches, at heavy-weapon strength
+    const A = VARM[v.type]; if (!A || v.dead || v === hit.veh || v.driver === shooter || v.gunner === shooter) continue;
+    if (match.mode === 'tdm' && ((v.driver && v.driver.faction === shooter.faction) || (v.gunner && v.gunner.faction === shooter.faction))) continue;
+    const T = vd(v), dv = Math.hypot(v.x - x, (v.y || 0) + T.h / 2 - y, v.z - z) - T.hz; if (dv < w.splash.radius) damageVehicle(v, w.splash.damage * (1 - .7 * Math.max(0, dv) / w.splash.radius) * A.heavy, shooter);
   }
 }
 
@@ -1080,6 +1123,7 @@ function heatOk(v, w, now) {   // the mech's miniguns: heat builds with every sh
 }
 function tickVehicles(now) {   // roadkill: a fast car that touches an enemy on foot kills them outright, and the driver gets the kill
   for (const v of vehicles) {
+    if (v.dead) { if (now - v.deadAt > VEH_RESPAWN_MS) { Object.assign(v, { x: v.home.x, y: v.home.y, z: v.home.z, yaw: v.home.yaw, hp: VARM[v.type].hp, dead: false, speed: 0, dirty: true }); emit('vehicles', vehRows()); } continue; }
     if (v.gunner) { v.gunner.x = v.x; v.gunner.z = v.z; v.gunner.y = v.y || 0; }   // the roof gunner rides along
     const D = v.driver; if (!D || (v.type !== 'car' && v.type !== 'tank') || Math.abs(v.speed) < (v.type === 'tank' ? 4 : 7)) continue;
     for (const p of [...players.values()]) {
@@ -1105,7 +1149,7 @@ function tickTurrets(now) {   // a turret sweeps its scanner dome; anything host
     t.yaw = r3(wrap(t.yaw + clamp(wrap(want - t.yaw), -.22, .22))); t.pitch = r3(clamp(t.pitch + clamp(Math.atan2(dy, flat) - t.pitch, -.15, .15), -.4, 1.2));
     if (now < t.nextShot || Math.abs(wrap(want - t.yaw)) > .12) continue;
     const o = { x: t.x, y: t.y + .6, z: t.z }, u = { x: dx / dist, y: dy / dist, z: dz / dist };
-    const look = cast(t.sh, o, u, dist); if (look.who !== tgt && look.t < dist - 1) continue;   // a wall in the way
+    const look = cast(t.sh, o, u, dist); if (look.who !== tgt && look.t < dist - 1 && !(look.veh && look.veh.id === tgt.vehicle)) continue;   // a wall in the way
     const e = .02 + dist * .0008, d = { x: u.x + (Math.random() - .5) * 2 * e, y: u.y + (Math.random() - .5) * 2 * e, z: u.z + (Math.random() - .5) * 2 * e }, l = Math.hypot(d.x, d.y, d.z);
     d.x /= l; d.y /= l; d.z /= l; t.nextShot = now + TURRET.fireRateDelay;
     const hit = cast(t.sh, o, d, TURRET.range), tt = hit.t;
@@ -1270,10 +1314,12 @@ function connect(socket, room) {
     if (me.vehicle) { leaveVehicle(me, true); return; }
     if (takePickup(me, now)) return;   // a weapon within reach comes before a vehicle
     let best = null, bd = 99, gun = false;
-    for (const v of vehicles) {   // a free seat, a pillar gun, or the roof gun of a friendly car that already has a driver
-      const open = !v.driver, roof = v.type === 'car' && v.driver && !v.gunner && (match.mode !== 'tdm' || v.driver.faction === me.faction);
-      if (!(open || roof) || (v.type !== 'turret' && Math.abs((v.y || 0) - me.y) > 3) || (v.team && match.mode === 'tdm' && v.team !== me.faction)) continue;   // an enemy base's sentry is not yours to man
-      const d = distToVehicle(v, me.x, me.z); if (d <= (open ? VEH.useRange : VEH.gunRange) && d < bd) { best = v; bd = d; gun = !open; }   // the roof seat of a moving car can be taken from a bit further away
+    for (const v of vehicles) {   // the wheel of a free vehicle, a pillar gun, or either seat of a car (the roof gun can be manned with nobody driving)
+      if (v.dead) continue;
+      const seat = v.type === 'car' ? seatFor(v, me.x, me.z) : v.driver ? null : 'd'; if (!seat) continue;
+      if (match.mode === 'tdm' && v.type === 'car' && ((seat === 'g' && v.driver && v.driver.faction !== me.faction) || (seat === 'd' && v.gunner && v.gunner.faction !== me.faction))) continue;   // you only join your own team's car
+      if ((v.type !== 'turret' && Math.abs((v.y || 0) - me.y) > 3) || (v.team && match.mode === 'tdm' && v.team !== me.faction)) continue;   // an enemy base's sentry is not yours to man
+      const d = distToVehicle(v, me.x, me.z); if (d <= (seat === 'g' && v.driver ? VEH.gunRange : VEH.useRange) && d < bd) { best = v; bd = d; gun = seat === 'g'; }   // the roof seat of a moving car can be taken from a bit further away
     }
     if (!best) return;
     if (gun) { best.gunner = me; me.seat = 'g'; } else best.driver = me;
@@ -1285,7 +1331,7 @@ function connect(socket, room) {
 
   on('veh', d => {                         // the driver reports the vehicle's pose
     const v = me.vehicle && vehicles.find(x => x.id === me.vehicle), now = Date.now();
-    if (!v || !d || !me.alive || me.seat || now - me.lastVeh < 15) return;
+    if (!v || v.dead || !d || !me.alive || me.seat || now - me.lastVeh < 15) return;
     if (![d.x, d.z, d.yaw, d.speed].every(n => typeof n === 'number' && Number.isFinite(n))) return;
     me.lastVeh = now;
     if (v.type === 'turret') { v.yaw = r3(wrap(d.yaw)); if (Number.isFinite(d.pitch)) me.pitch = r3(clamp(d.pitch, -1.2, 1.2)); me.x = v.x; me.z = v.z; me.y = v.sy; v.dirty = true; return; }   // a pillar gun only turns
