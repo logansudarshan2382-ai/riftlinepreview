@@ -27,6 +27,9 @@
  *                    kill {k:0, why} is a fall or a kill zone: no killer, the reason goes in the kill feed
  *                    profile {xp,level,into,need,coins,owned,eq,save,gain?}   your progress, after every change
  *                    skin {id,body,weapon}   someone equipped a skin: everyone repaints them     notice {text}
+ *                    award {name}   a multi-kill or a kill streak you just earned (DOUBLE KILL, GODLIKE ...)
+ *                    report {win,kills,heads,killXp,headXp,xp,coins,winCoins,levelCoins,from,to,up}   the match is over: what it paid you, for the results card
+ * client -> server   getprofile id   ->   pubprofile {name,level,into,need,kills,st,eq,faction}   anyone in the room can open anyone's profile, bots included
  * client -> server   (also) buy 'skinId'   equip 'skinId'    and on connect: auth {token, save}
  *
  * The server decides every hit, kill and point, and owns the weapon and map tables (clients just follow them).
@@ -75,7 +78,7 @@ const VWEAPONS = {   // what a driver's left click fires. Helicopter rockets are
 const TURRET = { radius: 80, damage: 6, headshotMultiplier: 1, fireRateDelay: 110, range: 80 };   // base turrets: the radius is their scanner dome
 
 // ---- progression: XP, levels, coins and skins, saved per player ----
-const XP_PER_KILL = 100, COINS_PER_KILL = 10, WIN_COINS = 50, LEVEL_UP_COINS = 25, MAX_PROFILES = 5000;
+const XP_PER_KILL = 100, XP_PER_HEADSHOT = 100, COINS_PER_KILL = 10, WIN_COINS = 50, LEVEL_UP_COINS = 25, MAX_PROFILES = 5000;
 const xpToNext = level => 200 + 100 * level;   // level 1 -> 2 takes 300 XP, then 400, 500 ...
 function levelInfo(xp) { let level = 1, rest = xp; while (rest >= xpToNext(level)) { rest -= xpToNext(level); level++; } return { level, into: rest, need: xpToNext(level) }; }
 
@@ -115,7 +118,15 @@ const SKINS = [
 ];
 const PREMIUM = ['carbon', 'chrome', 'camo', 'gold', 'obsidian', 'plasma', 'frost', 'rust', 'punk', 'voidm', 'digi', 'matrix', 'solar', 'space', 'acid'];   // the 15 premium skins bots draw from
 const skinById = new Map(SKINS.map(s => [s.id, s]));
-const newProfile = () => ({ xp: 0, coins: 0, kills: 0, owned: ['issue', 'w-issue', 'f-raider'], eq: { body: 'issue', weapon: 'w-issue', frame: 'f-raider', loadout: [0, 1, 2] }, rev: 0, seen: Date.now() });
+// Profile stats (the Profile screen). Kills live on the profile itself; everything else is counted here and saved with it.
+// deaths, games (matches played to the end), wins, winStreak (matches won in a row, right now) and its best, vehKills (vehicles destroyed), headshots, doubleKills / tripleKills (kills in quick succession),
+// sprees / dominating / unstoppable / godlike (kill streaks without dying: 3, 5, 7 and 10), bestStreak (longest kill streak)
+const STAT_KEYS = ['deaths', 'games', 'wins', 'winStreak', 'bestWinStreak', 'vehKills', 'headshots', 'doubleKills', 'tripleKills', 'sprees', 'dominating', 'unstoppable', 'godlike', 'bestStreak'];
+const STREAKS = { 3: ['sprees', 'KILLING SPREE'], 5: ['dominating', 'DOMINATING'], 7: ['unstoppable', 'UNSTOPPABLE'], 10: ['godlike', 'GODLIKE'] }, MULTI_MS = 4000;   // a kill within 4 s of the last one chains: 2 = double, 3 = triple
+const statNum = v => Math.max(0, Math.floor(Number(v)) || 0);
+const statsClean = s => { const o = {}; for (const k of STAT_KEYS) { const v = statNum(s && s[k]); if (v) o[k] = v; } return o; };   // only the non-zero ones, as whole numbers: what is saved and signed
+const statsFull = s => { const o = {}; for (const k of STAT_KEYS) o[k] = statNum(s && s[k]); return o; };                           // every stat, zeros included: what the client shows
+const newProfile = () => ({ xp: 0, coins: 0, kills: 0, owned: ['issue', 'w-issue', 'f-raider'], eq: { body: 'issue', weapon: 'w-issue', frame: 'f-raider', loadout: [0, 1, 2] }, st: {}, rev: 0, seen: Date.now() });
 
 // The "mock database": every profile in one JSON file, keyed by a secret token that the player's browser keeps.
 // Render's free plan wipes local files on every restart or sleep, so each player's browser also holds a signed backup
@@ -150,7 +161,7 @@ const store = new Store(path.join(DATA_DIR, 'profiles.json'));
 
 const mac = body => crypto.createHmac('sha256', SAVE_SECRET).update(body).digest('base64url');
 function sign(token, p) {   // a tamper-proof copy of the profile for the player's browser to keep
-  const body = Buffer.from(JSON.stringify({ t: token, xp: p.xp, coins: p.coins, kills: p.kills, owned: p.owned, eq: p.eq })).toString('base64url');
+  const body = Buffer.from(JSON.stringify({ t: token, xp: p.xp, coins: p.coins, kills: p.kills, owned: p.owned, eq: p.eq, st: statsClean(p.st) })).toString('base64url');
   return body + '.' + mac(body);
 }
 function adopt(token, save) {   // restore a profile from a signed backup, if the signature is ours and it belongs to this token
@@ -163,7 +174,7 @@ function adopt(token, save) {   // restore a profile from a signed backup, if th
     const owned = [...new Set(['issue', 'w-issue', 'f-raider', ...(Array.isArray(d.owned) ? d.owned : []).filter(id => skinById.has(id))])];
     const worn = (id, slot, def) => (owned.includes(id) && skinById.get(id).slot === slot ? id : def);
     const n = v => Math.max(0, Math.floor(Number(v)) || 0);
-    return { xp: n(d.xp), coins: n(d.coins != null ? d.coins : d.credits), kills: n(d.kills), owned, eq: { body: worn(d.eq && d.eq.body, 'body', 'issue'), weapon: worn(d.eq && d.eq.weapon, 'weapon', 'w-issue'), frame: worn(d.eq && d.eq.frame, 'frame', 'f-raider'), loadout: cleanLoadout(d.eq && d.eq.loadout) }, rev: 1, seen: Date.now() };
+    return { xp: n(d.xp), coins: n(d.coins != null ? d.coins : d.credits), kills: n(d.kills), owned, eq: { body: worn(d.eq && d.eq.body, 'body', 'issue'), weapon: worn(d.eq && d.eq.weapon, 'weapon', 'w-issue'), frame: worn(d.eq && d.eq.frame, 'frame', 'f-raider'), loadout: cleanLoadout(d.eq && d.eq.loadout) }, st: statsClean(d.st), rev: 1, seen: Date.now() };
   } catch (e) { return null; }
 }
 
@@ -494,14 +505,16 @@ const sendScores = () => emit('scores', { t: match.team, p: [...players.values()
 const vehRows = () => vehicles.map(v => [v.id, r2(v.x), r2(v.z), r3(v.yaw), v.driver ? v.driver.id : 0, r2(v.y || 0), v.gunner ? v.gunner.id : 0, VARM[v.type] ? Math.max(0, Math.round(100 * v.hp / VARM[v.type].hp)) : 100, v.dead ? 1 : 0]);   // ... then health as a percentage, and whether it is a wreck
 function profileView(p) {
   const pr = profOf(p), lv = levelInfo(pr.xp);
-  return { xp: pr.xp, level: lv.level, into: lv.into, need: lv.need, coins: pr.coins, kills: pr.kills, owned: pr.owned, eq: pr.eq, save: sign(p.token, pr) };
+  return { xp: pr.xp, level: lv.level, into: lv.into, need: lv.need, coins: pr.coins, kills: pr.kills, owned: pr.owned, eq: pr.eq, st: statsFull(pr.st), save: sign(p.token, pr) };
 }
 const notice = (p, text, extra) => p.sock.emit('notice', { text, ...extra });
-function grant(p, xp, coins, why) {
+function grant(p, xp, coins, why, head) {
   if (p.bot) { p.prof.xp += xp; p.prof.coins += coins; return; }   // a bot's profile is a fake one: it earns coins on paper but is never saved   // XP and coins go to the player's saved profile; a level-up pays a bonus
   const pr = profOf(p), before = levelInfo(pr.xp).level;
-  pr.xp += xp; pr.coins += coins; if (why === 'kill') pr.kills++;
+  const mx = p.mx || (p.mx = { xp0: pr.xp, kills: 0, heads: 0, xp: 0, coins: 0, winCoins: 0, levelCoins: 0 });   // this match's takings: the results card at the end reads them (startMatch clears them)
+  pr.xp += xp; pr.coins += coins; if (why === 'kill') { pr.kills++; mx.kills++; if (head) mx.heads++; }
   const up = levelInfo(pr.xp).level - before, bonus = up > 0 ? LEVEL_UP_COINS * up : 0;
+  mx.xp += xp; mx.coins += coins + bonus; mx.levelCoins += bonus; if (why === 'win') mx.winCoins += coins;
   pr.coins += bonus; pr.rev++; store.set(p.token, pr);
   p.sock.emit('profile', { ...profileView(p), gain: { xp, coins: coins + bonus, why }, levelUp: up > 0 });
 }
@@ -512,6 +525,50 @@ function equip(p, s) {   // wear a skin and tell everyone, so they see it too
 }
 const emitYou = p => p.sock.emit('you', { hp: p.hp, ammos: p.ammos, reserve: p.reserve, held: [...p.held], wi: p.wi, reloading: !!p.reloadEnd });
 const profOf = p => { const s = store.get(p.token); if (s) p.prof = s; return p.prof; };   // two tabs of one browser share one profile
+
+// ---- counting the stats, and the public profile anyone in the room can open ----
+const stOf = p => { if (!p || p.bot || !p.token) return null; const pr = profOf(p); return pr.st || (pr.st = {}); };   // bots and sentries have no saved profile: every stat call quietly skips them
+const stat = (p, key, n = 1) => { const st = stOf(p); if (st) st[key] = statNum(st[key]) + n; };
+const statSet = (p, key, v) => { const st = stOf(p); if (st) st[key] = v; };
+const statMax = (p, key, v) => { const st = stOf(p); if (st && v > statNum(st[key])) st[key] = v; };
+function saveProfile(p) {   // write the profile out and tell its owner: after something that pays no XP itself (a death, a lost match, a destroyed vehicle)
+  if (!p || p.bot || !p.token || !p.sock) return;
+  const pr = profOf(p); pr.rev++; store.set(p.token, pr); p.sock.emit('profile', profileView(p));
+}
+function killStats(k, v, head, how) {   // a kill: the victim's streak ends; the killer's streak, multi-kill chain and headshots count. Returns the awards to announce once the kill has been shown
+  const awards = [], now = Date.now();
+  v.streak = 0; v.multi = 0;
+  if (!k || k === v) return awards;   // a fall, a splat on yourself: nobody scores
+  k.streak = (k.streak || 0) + 1; k.multi = now - (k.lastKillAt || 0) < MULTI_MS ? (k.multi || 1) + 1 : 1; k.lastKillAt = now;
+  if (k.bot || !k.token) return awards;
+  if (head && !how) stat(k, 'headshots');
+  statMax(k, 'bestStreak', k.streak);
+  if (k.multi === 2) { stat(k, 'doubleKills'); awards.push('DOUBLE KILL'); }
+  else if (k.multi === 3) { stat(k, 'tripleKills'); awards.push('TRIPLE KILL'); }
+  const sk = STREAKS[k.streak]; if (sk) { stat(k, sk[0]); awards.push(sk[1]); }
+  return awards;
+}
+function matchReport(p, win) {   // the end-of-match results card: what the match paid (kills and headshots are separate, 100 XP each) and where the level bar went
+  const pr = profOf(p), mx = p.mx || { xp0: pr.xp, kills: 0, heads: 0, xp: 0, coins: 0, winCoins: 0, levelCoins: 0 }, from = levelInfo(mx.xp0), to = levelInfo(pr.xp);
+  return { win: !!win, kills: mx.kills, heads: mx.heads, killXp: mx.kills * XP_PER_KILL, headXp: mx.heads * XP_PER_HEADSHOT, xp: mx.xp, coins: mx.coins, winCoins: mx.winCoins, levelCoins: mx.levelCoins, from, to, up: to.level - from.level };
+}
+const totalXp = L => 200 * (L - 1) + 50 * (L - 1) * L;   // XP needed to reach level L: the sum of xpToNext for every level before it
+function botProfile(p) {   // bots have a profile too: believable numbers that follow their (fake) level, and are the same every time somebody looks
+  let a = 0x811c9dc5; for (const ch of p.name + '|' + p.lv) { a ^= ch.charCodeAt(0); a = Math.imul(a, 16777619); }
+  const rnd = () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };   // a small seeded random number generator
+  const L = Math.max(1, p.lv || 1), xp = totalXp(L) + Math.floor(rnd() * xpToNext(L)), info = levelInfo(xp);
+  const kills = Math.round(xp / XP_PER_KILL * (.9 + rnd() * .2)), kd = Math.min(3, .6 + Math.min(1.6, L / 40) * (.6 + rnd() * .8)), deaths = Math.round(kills / kd);
+  const games = kills ? Math.max(1, Math.round(kills / (10 + rnd() * 8))) : 0, wins = Math.round(games * (.32 + rnd() * .2 + Math.min(.15, L / 500)));
+  const dbl = Math.round(kills * (.03 + rnd() * .03)), tri = Math.round(dbl * (.08 + rnd() * .08)), sprees = Math.round(kills * (.06 + rnd() * .05)), dom = Math.floor(sprees * .5), unst = Math.floor(dom * .5), god = Math.floor(unst * .6);   // each rung is rarer, and a low-level bot has none of the top ones
+  const best = god ? 10 + Math.floor(rnd() * 8) : unst ? 7 + Math.floor(rnd() * 3) : dom ? 5 + Math.floor(rnd() * 2) : sprees ? 3 + Math.floor(rnd() * 2) : Math.min(kills, 2);
+  return { level: info.level, into: info.into, need: info.need, kills, st: statsFull({ deaths, games, wins, bestWinStreak: Math.min(wins, 1 + Math.floor(rnd() * 5)), vehKills: Math.round(kills * (.05 + rnd() * .1)), headshots: Math.round(kills * (.08 + rnd() * .15)), doubleKills: dbl, tripleKills: tri, sprees, dominating: dom, unstoppable: unst, godlike: god, bestStreak: best }) };
+}
+function pubProfile(p) {   // what any player in the room may see of another: name, level, look and stats
+  const eq = profOf(p).eq, base = { id: p.id, name: p.name, faction: p.faction, eq: { body: eq.body, weapon: eq.weapon, frame: eq.frame } };
+  if (p.bot) return { ...base, ...botProfile(p) };
+  const pr = profOf(p), li = levelInfo(pr.xp);
+  return { ...base, level: li.level, into: li.into, need: li.need, kills: pr.kills, st: statsFull(pr.st) };
+}
 const cleanName = (n, id) => (typeof n === 'string' ? n.replace(/[^\p{L}\p{N} _.-]/gu, '').trim().slice(0, 14) : '') || 'Pilot ' + id;
 const safeEqual = (a, b) => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && crypto.timingSafeEqual(x, y); };
 
@@ -672,11 +729,14 @@ function hurt(shooter, target, dmg, head, how) {
   if (target.vehicle) leaveVehicle(target, false);
   if (DROPS_ON) dropWeapon(target);   // off by default: the weapon they held is gone with them
   if (match.mode === 'tdm') match.team[shooter.faction]++;
-  grant(shooter, XP_PER_KILL, COINS_PER_KILL, 'kill');
+  const awards = killStats(shooter, target, head, how), hs = !!head && !how; stat(target, 'deaths');   // counted before grant(), which sends the shooter their updated profile
+  grant(shooter, XP_PER_KILL + (hs ? XP_PER_HEADSHOT : 0), COINS_PER_KILL, 'kill', hs);   // a headshot kill: the kill's XP plus the headshot's
   match.hot = { x: target.x, z: target.z, t: Date.now() };   // where the last fight was, for bots with nothing in sight
   emitYou(target);
-  emit('kill', { k: shooter.id, v: target.id, kn: shooter.name, vn: target.name, kf: shooter.faction, vf: target.faction, kl: lvOf(shooter), vl: lvOf(target), hs: !!head, how: how || '', r: RESPAWN_MS, xp: XP_PER_KILL });
+  emit('kill', { k: shooter.id, v: target.id, kn: shooter.name, vn: target.name, kf: shooter.faction, vf: target.faction, kl: lvOf(shooter), vl: lvOf(target), hs: !!head, how: how || '', r: RESPAWN_MS, xp: XP_PER_KILL, hx: hs ? XP_PER_HEADSHOT : 0 });
   sendScores();
+  if (target !== shooter) saveProfile(target);   // their death is on their profile now
+  if (shooter.sock) for (const a of awards) shooter.sock.emit('award', { name: a });   // after the kill, so the popup reads: hit, kill, award
   if (match.mode === 'tdm' && match.team[shooter.faction] >= LIMIT.tdm) endMatch(shooter.faction.toUpperCase() + ' WINS', shooter.faction, [...players.values()].filter(p => p.faction === shooter.faction));
   else if (match.mode === 'ffa' && shooter.kills >= LIMIT.ffa) endMatch(shooter.name + ' WINS', 'ffa', [shooter]);
 }
@@ -694,6 +754,7 @@ function eliminate(p, why) {
   emitYou(p);
   emit('kill', { k: 0, v: p.id, kn: '', vn: p.name, kf: 'ffa', vf: p.faction, vl: lvOf(p), r: RESPAWN_MS, why });
   sendScores();
+  p.streak = 0; p.multi = 0; stat(p, 'deaths'); saveProfile(p);
 }
 
 // A map is only used if its spawn matrix is safe: inside the bounds, standing on a floor, clear of walls and kill zones, with head room,
@@ -731,7 +792,16 @@ const nextMapId = () => MAP_ENV !== 'rotate' ? MAP_ENV : randOf(MAP_IDS.filter(i
 function endMatch(winner, wf, winners) {
   if (match.state !== 'live') return;
   match.state = 'over';
+  const won = new Set(winners || []);
+  for (const p of players.values()) {   // everybody who was here for a good part of the match gets a game played; winners get a win and a longer streak
+    if (p.bot || !p.token || Date.now() - (p.joinedAt || 0) < 30000) continue;
+    stat(p, 'games');
+    if (won.has(p)) { stat(p, 'wins'); stat(p, 'winStreak'); statMax(p, 'bestWinStreak', statNum(stOf(p).winStreak)); }
+    else if (won.size) statSet(p, 'winStreak', 0);   // somebody else won: the streak is over (a draw leaves it alone)
+  }
   for (const p of winners || []) grant(p, 0, WIN_COINS, 'win');
+  for (const p of players.values()) if (!won.has(p)) saveProfile(p);   // the winners were just sent theirs by grant()
+  for (const p of players.values()) if (!p.bot && p.token && p.sock && (p.mx || Date.now() - (p.joinedAt || 0) >= 30000)) p.sock.emit('report', matchReport(p, won.has(p)));   // the results card slides up on everyone who took part
   const next = nextMode(), nextMap = nextMapId();
   emit('match', { ...matchInfo(), winner, wf, next, nextMap: MAPS[nextMap].name, ms: INTERMISSION_MS });
   { const room = cur; nextTimer = setTimeout(() => inRoom(room, () => startMatch(next, nextMap)), INTERMISSION_MS); }   // the timer fires outside any room, so re-enter this one
@@ -754,7 +824,7 @@ function startMatch(mode, mapId) {
   vehicles = vehDefs(map).map((d, i) => ({ id: i + 1, team: d.team || null, sentry: d.sentry || 0, type: d.type || 'car', x: d.x, y: d.y || 0, sy: d.y || 0, z: d.z, yaw: d.yaw, speed: 0, driver: null, gunner: null, dirty: false, heat: 0, lockUntil: 0, hp: (VARM[d.type || 'car'] || { hp: 0 }).hp, dead: false, deadAt: 0, home: { x: d.x, y: d.y || 0, z: d.z, yaw: d.yaw } }));
   for (const p of players.values()) p.vehicle = 0;
   const list = [...players.values()].sort(() => Math.random() - .5), flip = Math.random() < .5 ? 1 : 0;   // random split into teams
-  list.forEach((p, i) => { p.kills = p.deaths = 0; p.faction = mode === 'tdm' ? ((i + flip) % 2 ? 'horizon' : 'vanguard') : 'ffa'; });
+  list.forEach((p, i) => { p.kills = p.deaths = 0; p.streak = p.multi = 0; p.mx = null; p.faction = mode === 'tdm' ? ((i + flip) % 2 ? 'horizon' : 'vanguard') : 'ffa'; });
   emit('map', clientMap(map));
   pickups = (map.pickups || []).map((d, i) => ({ id: 'm' + i, wi: randOf(POWER), x: d.x, y: d.y, z: d.z, up: true, back: 0, drop: false })); emit('pk', pickupRows()); makeTurrets();
   emit('vehicles', vehRows());
@@ -1067,6 +1137,7 @@ function tickPickups(now) {   // map pickups come back, old drops fade away
 }
 // One shot's damage: a headshot multiplies it, and a rocket also hurts every enemy near the blast (less the further they are; never you or your team).
 function destroyVehicle(v, by) {   // a vehicle at zero hit points blows up: everyone inside dies, people close by are hurt, and it is a wreck until it respawns
+  if (by && by.token) { stat(by, 'vehKills'); saveProfile(by); }
   v.hp = 0; v.dead = true; v.deadAt = Date.now(); v.speed = 0; v.y = v.sy || 0; v.dirty = true;
   const riders = [v.driver, v.gunner].filter(Boolean); v.driver = null; v.gunner = null;
   for (const p of riders) { p.vehicle = 0; p.seat = 0; p.x = v.x; p.z = v.z; p.y = v.y; if (p.sock) p.sock.emit('undrive', { x: v.x, z: v.z }); if (p.alive) hurt(by || p, p, 9999, false, 'vehicle'); }
@@ -1256,7 +1327,7 @@ function connect(socket, room) {
   if (!prof) { prof = adopt(token, auth.save); if (prof) store.set(token, prof); else prof = newProfile(); }   // from the browser's signed backup, or brand new
   const me = {
     id, room, sock: socket, token, prof, shopAt: 0, name: 'Pilot ' + id, faction: pickFaction(), x: 0, y: 0, z: 0, yaw: 0, pitch: 0, last: 0, lastVeh: 0, useAt: 0,
-    hp: HP, alive: true, kills: 0, deaths: 0, ammos: WEAPONS.map(w => w.magazineSize), reserve: WEAPONS.map(w => w.maxAmmo), held: new Set(), wi: 0, vehicle: 0, reloadEnd: 0, nextShot: 0, respawnAt: 0, epoch: 0, rtt: 100, hist: [], nameAt: 0
+    hp: HP, alive: true, kills: 0, deaths: 0, ammos: WEAPONS.map(w => w.magazineSize), reserve: WEAPONS.map(w => w.maxAmmo), held: new Set(), wi: 0, vehicle: 0, reloadEnd: 0, nextShot: 0, respawnAt: 0, epoch: 0, rtt: 100, hist: [], nameAt: 0, joinedAt: Date.now()
   };
   const sp = pickSpawn(me); Object.assign(me, { x: sp.x, y: sp.y, z: sp.z, yaw: sp.yaw });   // a safe point from the spawn matrix
   players.set(socket.id, me); me.hp = maxHp(me);
@@ -1380,6 +1451,11 @@ function connect(socket, room) {
     if (nameTaken(nm, me)) return notice(me, 'That name is already taken in this room');   // no two players, human or bot, share a name
     me.nameAt = now; me.name = nm;
     emit('rename', { id: me.id, name: nm });
+  });
+
+  on('getprofile', id => {   // somebody opened another player's profile: send what is public (bots get a believable one too)
+    const now = Date.now(); if (typeof id !== 'number' || now - (me.profAt || 0) < 250) return; me.profAt = now;
+    const t = [...players.values()].find(q => q.id === id); if (t) socket.emit('pubprofile', pubProfile(t));
   });
 
   on('disconnect', () => {
