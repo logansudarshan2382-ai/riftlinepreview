@@ -65,7 +65,7 @@ const vd = v => VTYPES[v.type] || VTYPES.car;
 // Vehicle armour. Shots that hit a vehicle now wear down the vehicle, not the person inside, until it blows up. `hp` is its hit points; light / mid / heavy is the share of a shot's damage that gets through,
 // by the weight of the weapon: light = rifles, SMGs, pistols, shotgun pellets, minigun; mid = sniper rifles, magnums, marksman rifles (26+ damage a shot); heavy = launchers, grenades, anti-materiel and rail rifles, vehicle cannons.
 // The mech is well armoured but has a weak spot: its glowing reactor on the upper back takes triple damage and ignores its armour. Gun nests on pillars and base sentry seats are not vehicles in this sense and cannot be destroyed.
-const VARM = { car: { hp: 450, light: .4, mid: .6, heavy: 1 }, tank: { hp: 1000, light: .08, mid: .2, heavy: .85 }, heli: { hp: 600, light: .4, mid: .65, heavy: 1 }, mech: { hp: 1100, light: .22, mid: .42, heavy: .7, weak: 3 } };
+const VARM = { car: { hp: 450, light: .8, mid: .88, heavy: 1 }, tank: { hp: 1700, light: .5, mid: .64, heavy: .85 }, heli: { hp: 550, light: .8, mid: .88, heavy: 1 }, mech: { hp: 1200, light: .6, mid: .64, heavy: .7, weak: 3 } };   // car = Protector Jeep, heli = Guardian, mech = Overseer, tank = Hammerhead. `light` is the share of small-arms damage that gets through (0.8 = takes 20% less), mid sits between light and heavy
 const VEH_RESPAWN_MS = 60000;   // a wreck stays as cover for a minute, then the vehicle is back where it started
 const weightOf = w => (w.splash && w.splash.damage >= 40) || w.damage >= 70 || (w.pierce || 0) >= 2 ? 'heavy' : w.damage >= 26 ? 'mid' : 'light';
 const VWEAPONS = {   // what a driver's left click fires. Helicopter rockets are slow; the mech's miniguns heat up (+2.2 a shot, cooling 18 a second, locked for 2.5 s at 100)
@@ -75,7 +75,7 @@ const VWEAPONS = {   // what a driver's left click fires. Helicopter rockets are
   turret: { damage: 14, headshotMultiplier: 1.5, fireRateDelay: 90, range: 150 },   // a pillar-top gun
   cargun: { damage: 9, headshotMultiplier: 1.3, fireRateDelay: 75, range: 110 }      // the roof gun of a car, fired by a passenger
 };
-const TURRET = { radius: 80, damage: 6, headshotMultiplier: 1, fireRateDelay: 110, range: 80 };   // base turrets: the radius is their scanner dome
+const TURRET = { radius: 120, damage: 6, headshotMultiplier: 1, fireRateDelay: 110, range: 125, top: 14, head: 1.6, reach: 1.7 };   // base sentries: they stand on a 14 m tower (as high as the sniper decks) and scan 120 m around it; `head` is how far above the tower top the gun sits and `reach` how far its muzzle sticks out sideways
 
 // ---- progression: XP, levels, coins and skins, saved per player ----
 const XP_PER_KILL = 100, XP_PER_HEADSHOT = 100, COINS_PER_KILL = 10, WIN_COINS = 50, LEVEL_UP_COINS = 25, MAX_PROFILES = 5000;
@@ -126,7 +126,7 @@ const STREAKS = { 3: ['sprees', 'KILLING SPREE'], 5: ['dominating', 'DOMINATING'
 const statNum = v => Math.max(0, Math.floor(Number(v)) || 0);
 const statsClean = s => { const o = {}; for (const k of STAT_KEYS) { const v = statNum(s && s[k]); if (v) o[k] = v; } return o; };   // only the non-zero ones, as whole numbers: what is saved and signed
 const statsFull = s => { const o = {}; for (const k of STAT_KEYS) o[k] = statNum(s && s[k]); return o; };                           // every stat, zeros included: what the client shows
-const newProfile = () => ({ xp: 0, coins: 0, kills: 0, owned: ['issue', 'w-issue', 'f-raider'], eq: { body: 'issue', weapon: 'w-issue', frame: 'f-raider', loadout: [0, 1, 2] }, st: {}, rev: 0, seen: Date.now() });
+const newProfile = () => ({ xp: 0, coins: 0, kills: 0, owned: ['issue', 'w-issue', 'f-raider'], eq: { body: 'issue', weapon: 'w-issue', frame: 'f-raider', loadout: [0, 1, 3] }, st: {}, rev: 0, seen: Date.now() });
 
 // The "mock database": every profile in one JSON file, keyed by a secret token that the player's browser keeps.
 // Render's free plan wipes local files on every restart or sleep, so each player's browser also holds a signed backup
@@ -242,16 +242,22 @@ const ROWS = [   // name, short, class, unlock level, damage, delay ms, magazine
   ['Singularity gun', 'SINGULAR', 'Energy', 50, 90, 2500, 1, 5, 5, 200, { splash: { radius: 14, damage: 85 }, headshotMultiplier: 1 }]
 ];
 const WEAPONS = (() => {
-  const list = BASE_WEAPONS.map((w, i) => ({ ...w, cls: ['Rifle', 'Marksman', 'Launcher'][i], ...(i === 1 ? { zoom: 18 } : {}) }));
+  const list = BASE_WEAPONS.map((w, i) => ({ ...w, cls: ['Rifle', 'Marksman', 'Launcher'][i], ...(i === 1 ? { zoom: 18 } : {}), ...(i === 2 ? { pickupOnly: true } : {}) }));   // the rocket launcher is never in a loadout: it lies in a hidden spot on each map
   for (const [name, short, cls, lv, dmg, rate, mag, max, rel, rng, o] of ROWS) list.push({ name, short, cls, damage: dmg, headshotMultiplier: 1.5, fireRateDelay: rate, magazineSize: mag, maxAmmo: max, reloadTime: rel, range: rng, unlockLevel: lv, auto: false, len: LEN[cls], ...o });
   return list;
 })();
-const POWER = WEAPONS.map((w, i) => i).filter(i => ['Marksman', 'Launcher', 'Energy', 'LMG', 'Shotgun'].includes(WEAPONS[i].cls));   // what the map's weapon pickups hand out: a different power weapon every match
-const cleanLoadout = a => Array.isArray(a) && a.length === 3 && a.every(i => Number.isInteger(i) && i >= 0 && i < WEAPONS.length) ? a : [0, 1, 2];
+const POWER = WEAPONS.map((w, i) => i).filter(i => ['Marksman', 'Launcher', 'Energy', 'LMG', 'Shotgun'].includes(WEAPONS[i].cls) && !WEAPONS[i].pickupOnly);   // what the map's weapon pickups hand out: a different power weapon every match (the rocket launcher has its own fixed pickup)
+const ROCKET = WEAPONS.findIndex(w => w.pickupOnly);
+const DEFAULT_LOADOUT = [0, 1, 3];   // assault rifle, sniper rifle, pistol
+const cleanLoadout = a => {   // three valid weapon numbers; a pickup-only weapon (the rocket launcher) that an old profile still carries is swapped for a pistol, or the next free starter weapon
+  if (!(Array.isArray(a) && a.length === 3 && a.every(i => Number.isInteger(i) && i >= 0 && i < WEAPONS.length))) return DEFAULT_LOADOUT.slice();
+  const out = a.slice(); out.forEach((i, k) => { if (WEAPONS[i].pickupOnly) out[k] = [3, 9, 4, 0].find(j => !out.includes(j)); });
+  return out;
+};
 const loadoutOf = p => p.bot ? p.loadout : cleanLoadout(profOf(p).eq.loadout).map(i => lvOf(p) >= WEAPONS[i].unlockLevel ? i : 0);   // the three weapons on keys 1-3
 const BOT_LEVEL = 10;   // whatever level a bot pretends to be, it only carries guns a level 10 player could use; anything better it has to find on the map
 function botLoadout() {   // one weapon for the middle, one for close in, one for long range, all from the level 10 list
-  const pool = cls => { const a = WEAPONS.map((w, i) => i).filter(i => cls.includes(WEAPONS[i].cls) && WEAPONS[i].unlockLevel <= BOT_LEVEL); return a.length ? randOf(a) : 0; };
+  const pool = cls => { const a = WEAPONS.map((w, i) => i).filter(i => cls.includes(WEAPONS[i].cls) && WEAPONS[i].unlockLevel <= BOT_LEVEL && !WEAPONS[i].pickupOnly); return a.length ? randOf(a) : 0; };
   return [pool(['Rifle', 'LMG', 'Energy']), pool(['Pistol', 'SMG', 'Shotgun']), pool(['Marksman', 'Launcher'])];
 }
 const spreadDir = (d, s) => { const x = d.x + (Math.random() - .5) * 2 * s, y = d.y + (Math.random() - .5) * 2 * s, z = d.z + (Math.random() - .5) * 2 * s, l = Math.hypot(x, y, z); return { x: x / l, y: y / l, z: z / l }; };
@@ -344,14 +350,14 @@ function buildWild(c) {
     const row = (d, n) => spawnRow(...P(-24, d), ...P(24, d), n).map(s => ({ ...s, yaw: rd(vy) })); spawns[team] = [...row(12, 8), ...row(20, 8)];
     const veh = (u, d, type, extra = {}) => { const [x, z] = P(u, d); vehicles.push({ x: rd(x), z: rd(z), yaw: rd(vy), type, ...extra }); };
     veh(-34, 100, 'car'); veh(34, 100, 'mech'); veh(0, 96, 'heli'); veh(26, 92, 'tank');   // a car, a mech, a helicopter and a tank in each base
-    for (const u of [-17, 17]) { W(u, 110, 1.4, 1.4, 2, 'building'); const [x, z] = P(u, 110); turrets.push({ team, x: rd(x), y: 2, z: rd(z) }); veh(u, 110, 'turret', { y: 2, team, sentry: turrets.length }); }   // a sentry turret on a pedestal either side of the gate; a teammate can take its gun seat (press E at the foot of the pedestal) and it stops firing by itself while someone is in it
+    for (const u of [-17, 17]) { W(u, 110, 1.4, 1.4, TURRET.top, 'building'); const [x, z] = P(u, 110); turrets.push({ team, x: rd(x), y: TURRET.top, z: rd(z), r: TURRET.radius, h: TURRET.head }); veh(u, 110, 'turret', { y: TURRET.top, team, sentry: turrets.length }); }   // a sentry turret on top of a 14 m tower either side of the gate: high enough to see over the base walls; a teammate can take its gun seat (press E at the foot of the pedestal) and it stops firing by itself while someone is in it
   };
   for (const [team, ax, sign, back, lat] of c.bases) addBase(team, ax, sign, back, lat);
-  // Hills with the rocket launcher on the first one: a three-step rocky hill, climbed by ramps.
+  // Hills with a power weapon on the first one: a three-step rocky hill, climbed by ramps.
   c.mounts.forEach(([cx, cz], k) => {
     [24, 16, 8].forEach((s, i) => { add(cx, cz, s, s, 2, 'mesa', i * 2); for (const d of [-1, 1]) ramps.push({ ...RAMP(cx, rd(cz + d * (s + 2.5)), 5, 2.5, i * 2, i * 2 + 2, d > 0 ? 'N' : 'S'), nat: 1 }); });
     ramps.push({ ...RAMP(rd(cx + 26.5), cz, 2.5, 5, 0, 2, 'W'), nat: 1 }, { ...RAMP(rd(cx - 26.5), cz, 2.5, 5, 0, 2, 'E'), nat: 1 });
-    if (!k) pickups.push({ wi: 2, x: cx, y: 7.2, z: cz });
+    if (!k) pickups.push({ x: cx, y: 7.2, z: cz });
   });
   // The edge of the world: cliff walls the height of the helicopter ceiling all the way round the outline.
   const rimLine = (x0, z0, x1, z1) => {   // one straight edge: cliff blocks just outside it
@@ -362,6 +368,82 @@ function buildWild(c) {
   const rimRing = (cx, cz, r, side) => { const rc = side === 'out' ? r + 14 : r - 14, n = Math.round(2 * Math.PI * rc / 18); for (let i = 0; i < n; i++) { const a = i / n * 6.2832; add(cx + rc * Math.cos(a), cz + rc * Math.sin(a), 14, 14, between(BH - 4, BH), 'cliff'); } };
   for (const e of S.edges || []) rimLine(...e);
   for (const r of S.rings || []) rimRing(...r);
+  // ---- Landmarks and hideouts. Every map has its own set, built from axis-aligned boxes of the natural kinds and placed before the random scatter, so nothing random lands on top of them:
+  //   archAt / henge   stone gateways, alone or four round a standing stone     tunnelRock   a rock massif with a tunnel through it     corridor   a long covered tunnel with side exits (they link the bases)
+  //   skybridge        two flat-topped towers and a bridge you can walk under    crystals     clusters of tall needles     hideout   a walled nook with a screen rock before its opening, a weapon inside
+  let DBG = false;   // MAPDEBUG=1 node server.js lists every landmark that had no room, and why
+  const site = (x, z, hx, hz, pad = 3) => {   // is there room for something this big here?
+    const k = keep(x, z, hx, hz), f = fits(x, z, hx, hz), fr = free(x, z, hx, hz, pad), ok = !k && f && fr;
+    if (!ok && DBG) console.log('  [' + c.id + '] skipped a landmark at', x, z, 'size', hx, hz, k ? '(in a base zone)' : !f ? '(outside the shape)' : '(something is in the way)');
+    return ok;
+  };
+  const far = (x, z, d) => bases.every(b => Math.hypot(x - b.x, z - b.z) > d);
+  let landmarks = 0;
+  const archAt = (x, z, ax, gap = 8, h = 9.5) => {   // a stone gateway you walk through along `ax`: two piers and a lintel
+    const th = 2.2, ln = 3, big = gap / 2 + 2 * th; if (!site(x, z, ax === 'z' ? big : ln, ax === 'z' ? ln : big)) return false;
+    if (ax === 'z') { for (const s of [-1, 1]) add(x + s * (gap / 2 + th), z, th, ln, h, 'cliff'); add(x, z, big, ln, 2.6, 'cliff', h - 2.6); }
+    else { for (const s of [-1, 1]) add(x, z + s * (gap / 2 + th), ln, th, h, 'cliff'); add(x, z, ln, big, 2.6, 'cliff', h - 2.6); }
+    landmarks++; return true;
+  };
+  const henge = (x, z, R0 = 19) => {   // a courtyard of four stone gateways round a standing stone, with a boulder at each corner
+    if (!site(x, z, R0 + 9, R0 + 9)) return false;
+    archAt(x, z - R0, 'z', 8, 10); archAt(x, z + R0, 'z', 8, 10); archAt(x - R0, z, 'x', 8, 10); archAt(x + R0, z, 'x', 8, 10);
+    for (const [a, b] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) add(x + a * R0 * .72, z + b * R0 * .72, 1.7, 1.7, between(5, 7), 'rock');
+    add(x, z, 1.6, 1.6, 4.4, 'rock'); return true;
+  };
+  const tunnelRock = (x, z, ax, len = 46, w = 7.5, h = 10, th = 7) => {   // a rock massif with a tunnel through it (you travel along `ax`); the passage is 6.4 m high
+    const hx = ax === 'x' ? len / 2 : w / 2 + th, hz = ax === 'x' ? w / 2 + th : len / 2, pass = 6.4; if (!site(x, z, hx, hz)) return false;
+    for (const s of [-1, 1]) { const o = s * (w / 2 + th / 2); if (ax === 'x') add(x, z + o, len / 2, th / 2, h, 'cliff'); else add(x + o, z, th / 2, len / 2, h, 'cliff'); }
+    if (ax === 'x') add(x, z, len / 2, w / 2, h - pass, 'cliff', pass); else add(x, z, w / 2, len / 2, h - pass, 'cliff', pass);
+    landmarks++; return true;
+  };
+  const corridor = (x0, z0, x1, z1, w = 7.5, every = 64) => {   // a long covered tunnel, 7.5 m wide and 6.4 m high, with a 9 m side exit every so often
+    const ax = z0 === z1 ? 'x' : 'z', a0 = Math.min(ax === 'x' ? x0 : z0, ax === 'x' ? x1 : z1), a1 = Math.max(ax === 'x' ? x0 : z0, ax === 'x' ? x1 : z1), len = a1 - a0, mid = (a0 + a1) / 2;
+    const cx = ax === 'x' ? mid : x0, cz = ax === 'x' ? z0 : mid, T = 1.6, H = 6.4, n = Math.max(2, Math.round(len / every)), seg = len / n, gap = 9;
+    if (!site(cx, cz, ax === 'x' ? len / 2 : w / 2 + T, ax === 'x' ? w / 2 + T : len / 2)) return false;
+    for (let i = 0; i < n; i++) {   // the side walls come in pieces, with an exit between each pair
+      const s0 = a0 + i * seg + (i > 0 ? gap / 2 : 0), s1 = a0 + (i + 1) * seg - (i < n - 1 ? gap / 2 : 0), m = (s0 + s1) / 2, hl = (s1 - s0) / 2;
+      for (const s of [-1, 1]) { const o = s * (w / 2 + T / 2); if (ax === 'x') add(m, cz + o, hl, T / 2, H, 'cliff'); else add(cx + o, m, T / 2, hl, H, 'cliff'); }
+    }
+    if (ax === 'x') add(cx, cz, len / 2, w / 2 + T, 1.8, 'mesa', H); else add(cx, cz, w / 2 + T, len / 2, 1.8, 'mesa', H);   // the roof
+    landmarks++; return true;
+  };
+  const skybridge = (x, z, ax, span = 40, hg = 9) => {   // two flat-topped towers with a bridge between them; each tower has a long ramp up its outer side, and you can walk under the bridge
+    const tw = 8, ramp = hg * 3.2, L = span / 2 + tw + ramp + 1; if (!site(x, z, ax === 'x' ? L : 9, ax === 'x' ? 9 : L)) return false;
+    for (const s of [-1, 1]) {
+      const tx = ax === 'x' ? x + s * span / 2 : x, tz = ax === 'x' ? z : z + s * span / 2; add(tx, tz, tw, tw, hg, 'mesa');
+      const r = ax === 'x' ? RAMP(tx + s * (tw + ramp / 2), z, ramp / 2, 3.5, 0, hg, s > 0 ? 'W' : 'E') : RAMP(x, tz + s * (tw + ramp / 2), 3.5, ramp / 2, 0, hg, s > 0 ? 'N' : 'S');
+      for (const k of ['x', 'z', 'hx', 'hz', 'y0', 'y1']) r[k] = rd(r[k]); r.nat = 1; ramps.push(r);
+    }
+    const dl = span / 2 - tw + 1; if (ax === 'x') { add(x, z, dl, 3, .8, 'mesa', hg - .8); for (const s of [-1, 1]) add(x, z + s * 2.75, dl - 1, .25, 1.1, 'cliff', hg); } else { add(x, z, 3, dl, .8, 'mesa', hg - .8); for (const s of [-1, 1]) add(x + s * 2.75, z, .25, dl - 1, 1.1, 'cliff', hg); }
+    landmarks++; return true;
+  };
+  const crystals = (x, z, n = 7) => { for (let i = 0; i < n; i++) { const a = R() * 6.283, r = between(0, 5), cx = x + r * Math.cos(a), cz = z + r * Math.sin(a); if (!keep(cx, cz, 1, 1) && fits(cx, cz, 1, 1) && free(cx, cz, .8, .8, 1)) { const q = add(cx, cz, between(.6, 1.1), between(.6, 1.1), between(2.2, 6.5), 'crystal'); q.col = c.accent; } } };   // glassy needles in the map's accent colour
+  const hideout = (x, z, face, roof) => {   // a walled nook, hard to see into: a back wall, two side walls, a front wall with a gap on one side, a screen boulder before the gap (and a roof when it is a cave)
+    const vert = face === 'N' || face === 'S', sg = { N: -1, S: 1, E: 1, W: -1 }[face];   // sg: which way along its axis the opening looks
+    const cx = vert ? x : x + sg * 10.2, cz = vert ? z + sg * 10.2 : z; if (!site(cx, cz, vert ? 8.6 : 11.8, vert ? 11.8 : 8.6, 2)) return null;
+    const W = (u, d, hu, hd, h, kind = 'cliff', y = 0) => vert ? add(x + u, z + sg * d, hu, hd, h, kind, y) : add(x + sg * d, z + u, hd, hu, h, kind, y), wh = roof ? 6.8 : 6;   // u across, d out from the back wall
+    W(0, 0, 8.1, 1.2, wh); W(-6.9, 5.5, 1.2, 5.5, wh); W(6.9, 5.5, 1.2, 5.5, wh); W(-3.9, 11, 3.9, 1.2, wh - .6); W(2.85, 20, 2.95, 1.5, 4.8, 'rock');   // the opening is 5.7 m wide and the screen boulder as wide, 6 m in front of it: bots can get round it too
+    if (roof) W(0, 5.5, 8.1, 6.7, 1.8, 'cliff', 5);
+    return { x: rd(vert ? x : x + sg * 4.5), z: rd(vert ? z + sg * 4.5 : z) };   // where the weapon lies
+  };
+  const PROG = {   // what each map gets; positions are in metres from the middle. A piece that has no room is simply skipped.
+    field: () => { corridor(-205, -176, 205, -176); henge(-135, 176); henge(135, 176); tunnelRock(-80, -50, 'x', 46); tunnelRock(80, 50, 'x', 46); archAt(-165, 0, 'x', 9, 11); archAt(165, 0, 'x', 9, 11); archAt(0, -95, 'z', 9, 11); archAt(0, 95, 'z', 9, 11); },   // Emerald Valley: a root tunnel along the south flank, standing stones in the north, hollow hills in the middle
+    glacier: () => { corridor(95, -160, 95, 160); skybridge(-140, 40, 'z'); skybridge(190, -120, 'z'); tunnelRock(-200, -40, 'z', 48); archAt(-60, -70, 'x', 8, 10); archAt(60, 70, 'x', 8, 10); archAt(0, -105, 'z', 9, 11); archAt(0, 105, 'z', 9, 11); },   // Glacier Run: an ice tunnel between the bases, two frozen sky bridges, an ice gate
+    arena: () => { corridor(-60, -125, 150, -125); corridor(-125, -60, -125, 150); skybridge(-250, -215, 'x'); skybridge(-30, -35, 'z'); tunnelRock(-120, -255, 'x', 64, 8, 11); tunnelRock(30, -230, 'z', 56, 8, 11); archAt(-250, 40, 'z', 10, 12); archAt(60, -170, 'x', 10, 12); archAt(150, -60, 'x', 10, 12); archAt(-230, 150, 'z', 10, 12); },   // Sunbaked Canyons: two tunnels from the elbow to the bases, natural bridges, hollow mesas, sandstone arches
+    station: () => { corridor(-175, -170, -175, 170); corridor(175, -170, 175, 170); skybridge(-215, -150, 'z'); skybridge(215, 150, 'z'); archAt(-140, -255, 'x', 9, 12); archAt(140, 255, 'x', 9, 12); archAt(140, -255, 'x', 9, 12); archAt(-140, 255, 'x', 9, 12); tunnelRock(0, 0 + 160, 'x', 50, 8, 11); },   // Moonrise Craters: twin lava tubes joining the bases, bridges over the craters, monolith gates
+    frontier: () => { corridor(95, -210, 95, 210); corridor(-95, -210, -95, 210); for (const x of [175, 215, 255]) { archAt(x, 0, 'x', 9, 10); archAt(-x, 0, 'x', 9, 10); } henge(320, 0); henge(-320, 0); skybridge(0, -190, 'x'); skybridge(0, 190, 'x'); },   // Twin Citadels: a pair of metro tunnels between the citadels, an avenue of arches down each arm, a henge at each end
+  };
+  DBG = !!process.env.MAPDEBUG; (PROG[c.id] || (() => {}))(); DBG = false;
+  for (let i = 0; i < (c.crystals || 0); i++) crystals(rx(), rz());
+  const HIDE = c.hideouts == null ? 5 : c.hideouts, roofP = c.caves == null ? .3 : c.caves, spots = [];
+  for (let t = 0; t < 5000 && spots.length < HIDE; t++) {   // hideouts: far from the bases and from each other, never on a hill
+    const x = rx(), z = rz(), face = 'NSEW'[Math.floor(R() * 4)];
+    if (!far(x, z, 100) || c.mounts.some(([a, b2]) => Math.hypot(x - a, z - b2) < 60) || spots.some(q => Math.hypot(q.x - x, q.z - z) < 110)) continue;
+    const h = hideout(x, z, face, R() < roofP); if (h) spots.push(h);
+  }
+  { const mid = c.mounts[c.mid || 0]; spots.sort((a, b2) => Math.abs(Math.hypot(a.x - mid[0], a.z - mid[1]) - 120) - Math.abs(Math.hypot(b2.x - mid[0], b2.z - mid[1]) - 120));   // the rocket launcher goes in the hideout about 120 m from the middle: worth a trip, not a gift
+    spots.forEach((q, i) => pickups.push(i === 0 ? { fixed: ROCKET, x: q.x, y: 1.2, z: q.z } : { x: q.x, y: 1.2, z: q.z })); }
   // Landscape pieces. Each one only goes down where there is room, so a failed try just leaves open ground.
   const mesa = (x, z, big) => {   // a flat-topped plateau reached by up to two long ramps
     const hx = big ? between(14, 24) : between(9, 17), hz = big ? between(12, 20) : between(8, 14), h = Math.round(between(4, 8) * 2) / 2, b = put(x, z, hx, hz, h, 'mesa', 0, 9); if (!b) return false;
@@ -420,32 +502,22 @@ function buildWild(c) {
   for (let i = 0; i < rep(c.low); i++) put(rx(), rz(), between(.7, 1.5), between(.7, 1.5), between(.8, 1.5), 'rock', 0, 2);   // low boulders: cover you have to jump
   const [mx0, mz0] = c.mounts[0], farFromBases = (x, z, d) => bases.every(b => Math.hypot(x - b.x, z - b.z) > d);
   for (let i = 0, n = 0; n < 2 && i < 200; i++) { const x = mx0 + between(-150, 150), z = mz0 + between(-150, 150); if (fits(x, z, 3, 4) && c.mounts.every(([a, b]) => Math.hypot(x - a, z - b) > 45) && farFromBases(x, z, 120) && free(x, z, 3, 4, 4)) { vehicles.push({ x: rd(x), z: rd(z), yaw: rd(between(-3, 3)), type: 'car' }); n++; } }   // two spare cars in the field
-  // Hidden weapons: a few power weapons tucked into nooks, spots with rock close on two or three sides, far from the bases and from each other (one gun per 110 m or so).
-  { const cand = []; for (let t = 0; t < 9000; t++) {
-      const x = rx(), z = rz(); if (!fits(x, z, 1.2, 1.2) || !free(x, z, 1.2, 1.2, 1.2) || !farFromBases(x, z, 110) || c.mounts.some(([a, b]) => Math.hypot(x - a, z - b) < 45)) continue;
-      const wall = (dx, dz) => blocks.some(b => b.h >= 1.8 && (b.y || 0) < 1 && Math.abs(x + dx - b.x) < b.hx && Math.abs(z + dz - b.z) < b.hz);
-      const closed = [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([dx, dz]) => wall(dx * 3, dz * 3) || wall(dx * 5.5, dz * 5.5)).length;
-      if (closed <= 3) cand.push({ x, z, closed, r: R() });   // never boxed in on all four sides, so there is always a way in
-    }
-    cand.sort((a, b) => b.closed - a.closed || a.r - b.r);   // the most tucked-away spots first
-    const want = 3 + (c.hidden == null ? 5 : c.hidden);
-    for (const need of [2, 1, 0]) for (const k of cand) { if (pickups.length >= want) break; if (k.closed >= need && pickups.every(q => Math.hypot(q.x - k.x, q.z - k.z) > 110)) pickups.push({ wi: 0, x: rd(k.x), y: 1.2, z: rd(k.z) }); } }   // nooks first; if a map has too few, the next best spots
   for (let t = 0; spawns.ffa.length < 20 && t < 6000; t++) { const x = rd(rx()), z = rd(rz()); if (fits(x, z, 3, 3) && !keep(x, z, 3, 3) && free(x, z, 1, 1, 3) && spawns.ffa.every(s => Math.hypot(s.x - x, s.z - z) > 40)) spawns.ffa.push(at(x, 0, z, c.mounts[0])); }
   return {
     id: c.id, name: c.name, half: Math.max(S.bx, S.bz), ex: S.bx, ez: S.bz, centre: c.mounts[c.mid || 0], theme: c.theme, sky: c.sky, fog: c.fog || [170, 720], sun: true, big: true, ceiling: 0, lights: [], tint: c.tint, accent: c.accent, stars: !!c.stars,
-    ground: 0, bounds: { min: [-S.bx, -2, -S.bz], max: [S.bx, BH, S.bz], edge: 'wall' }, killZones: [], blocks, ramps, bases, spawns, vehicles, pickups, turrets
+    ground: 0, bounds: { min: [-S.bx, -2, -S.bz], max: [S.bx, BH, S.bz], edge: 'wall' }, killZones: [], blocks, ramps, bases, spawns, vehicles, pickups, turrets, info: { landmarks, hideouts: spots.length }
   };
 }
 for (const c of [   // five very different places, each its own shape: a misty forest valley, a frozen island, canyon country, a cratered moon ring, and open grassland with ruins in a cross
-  { id: 'field',    name: 'Emerald Valley',   theme: 'forest', shape: 'rect', sky: 0xbfe0d2, tint: 0xd9e4de, accent: 0x7ee8a8, fog: [70, 420], seed: 20261101, valley: true, mesas: 0, mounds: 6,  canyons: 0, ridges: 4, rocks: 70,  low: 120, groves: 26, tree: ['tree', .9, 10, 15, 9], spires: 3,
+  { id: 'field',    name: 'Emerald Valley',   theme: 'forest', shape: 'rect', sky: 0xbfe0d2, tint: 0xd9e4de, accent: 0x7ee8a8, fog: [70, 420], seed: 20261101, valley: true, caves: .25, mesas: 0, mounds: 6,  canyons: 0, ridges: 4, rocks: 70,  low: 120, groves: 26, tree: ['tree', .9, 10, 15, 9], spires: 3,
     bases: [['vanguard', 'x', -1, 371, 0], ['horizon', 'x', 1, 371, 0]], mounts: [[0, 0]], nests: [[-150, 175], [150, -175], [-150, -175], [150, 175]] },
-  { id: 'glacier',  name: 'Glacier Run',      theme: 'ice',    shape: 'disc', sky: 0xe6f6ff, tint: 0xeaf4fb, accent: 0x6fd3ff, seed: 20261102, diag: true,   mesas: 4, mounds: 8,  canyons: 0, ridges: 5, rocks: 90,  low: 120, groves: 8,  tree: ['pine', .7, 9, 13, 7],   spires: 9,
+  { id: 'glacier',  name: 'Glacier Run',      theme: 'ice',    shape: 'disc', sky: 0xe6f6ff, tint: 0xeaf4fb, accent: 0x6fd3ff, seed: 20261102, diag: true, caves: .9, crystals: 16, mesas: 4, mounds: 8,  canyons: 0, ridges: 5, rocks: 90,  low: 120, groves: 8,  tree: ['pine', .7, 9, 13, 7],   spires: 9,
     bases: [['vanguard', 'z', -1, 316, 0], ['horizon', 'z', 1, 316, 0]], mounts: [[0, 0]], nests: [[-230, 60], [230, -60], [-95, -125], [95, 125]] },
-  { id: 'arena',    name: 'Sunbaked Canyons', theme: 'desert', shape: 'L',    sky: 0xffd27f, tint: 0xe3c196, accent: 0xff9a4d, seed: 20261103, grid: true,   mesas: 0, mounds: 12, canyons: 3, ridges: 3, rocks: 80,  low: 130, groves: 6,  tree: ['cactus', .6, 3, 5, 3], spires: 4,
+  { id: 'arena',    name: 'Sunbaked Canyons', theme: 'desert', shape: 'L',    sky: 0xffd27f, tint: 0xe3c196, accent: 0xff9a4d, seed: 20261103, grid: true, caves: .15, mesas: 0, mounds: 12, canyons: 3, ridges: 3, rocks: 80,  low: 130, groves: 6,  tree: ['cactus', .6, 3, 5, 3], spires: 4,
     bases: [['vanguard', 'z', 1, 321, -125], ['horizon', 'x', 1, 321, -125]], mounts: [[-125, -125]], nests: [[-270, 150], [40, 225], [150, -270], [235, 35]] },
-  { id: 'station',  name: 'Moonrise Craters', theme: 'moon',   shape: 'ring', sky: 0x1f2d66, tint: 0xb4bdd6, accent: 0xb48cff, seed: 20261104, stars: true, mesas: 4, mounds: 6,  canyons: 3, ridges: 9, rocks: 140, low: 160, groves: 0,  tree: ['tree', .8, 7, 11, 0],   spires: 6, craters: 9,
+  { id: 'station',  name: 'Moonrise Craters', theme: 'moon',   shape: 'ring', sky: 0x1f2d66, tint: 0xb4bdd6, accent: 0xb48cff, seed: 20261104, stars: true, caves: .8, crystals: 10, mesas: 4, mounds: 6,  canyons: 3, ridges: 9, rocks: 140, low: 160, groves: 0,  tree: ['tree', .8, 7, 11, 0],   spires: 6, craters: 9,
     bases: [['vanguard', 'z', -1, 334, 0], ['horizon', 'z', 1, 334, 0]], mounts: [[245, 0], [-245, 0]], nests: [[-200, 140], [200, -140], [-210, -110], [210, 110]] },
-  { id: 'frontier', name: 'Twin Citadels',    theme: 'grass',  shape: 'cross', sky: 0xc2e7ff, tint: 0xdde5ec, accent: 0x7ec8ff, seed: 20261013,              mesas: 2, mounds: 22, canyons: 0, ridges: 3, rocks: 60,  low: 110, groves: 4,  tree: ['tree', .8, 7, 10, 5],   spires: 4, ruins: 9,
+  { id: 'frontier', name: 'Twin Citadels',    theme: 'grass',  shape: 'cross', sky: 0xc2e7ff, tint: 0xdde5ec, accent: 0x7ec8ff, seed: 20261013, caves: .25, mesas: 2, mounds: 22, canyons: 0, ridges: 3, rocks: 60,  low: 110, groves: 4,  tree: ['tree', .8, 7, 10, 5],   spires: 4, ruins: 9,
     bases: [['vanguard', 'z', -1, 376, 0], ['horizon', 'z', 1, 376, 0]], mounts: [[0, 0]], nests: [[-300, 20], [300, -20], [-110, -110], [110, 110]] }
 ]) MAPS[c.id] = buildWild(c);
 for (const m of Object.values(MAPS)) {   // manned gun nests on top of the tallest rock spires (or pillars) of every map
@@ -505,7 +577,7 @@ const sendScores = () => emit('scores', { t: match.team, p: [...players.values()
 const vehRows = () => vehicles.map(v => [v.id, r2(v.x), r2(v.z), r3(v.yaw), v.driver ? v.driver.id : 0, r2(v.y || 0), v.gunner ? v.gunner.id : 0, VARM[v.type] ? Math.max(0, Math.round(100 * v.hp / VARM[v.type].hp)) : 100, v.dead ? 1 : 0]);   // ... then health as a percentage, and whether it is a wreck
 function profileView(p) {
   const pr = profOf(p), lv = levelInfo(pr.xp);
-  return { xp: pr.xp, level: lv.level, into: lv.into, need: lv.need, coins: pr.coins, kills: pr.kills, owned: pr.owned, eq: pr.eq, st: statsFull(pr.st), save: sign(p.token, pr) };
+  return { xp: pr.xp, level: lv.level, into: lv.into, need: lv.need, coins: pr.coins, kills: pr.kills, owned: pr.owned, eq: { ...pr.eq, loadout: cleanLoadout(pr.eq.loadout) }, st: statsFull(pr.st), save: sign(p.token, pr) };   // an old profile's rocket launcher is already swapped out here
 }
 const notice = (p, text, extra) => p.sock.emit('notice', { text, ...extra });
 function grant(p, xp, coins, why, head) {
@@ -826,7 +898,7 @@ function startMatch(mode, mapId) {
   const list = [...players.values()].sort(() => Math.random() - .5), flip = Math.random() < .5 ? 1 : 0;   // random split into teams
   list.forEach((p, i) => { p.kills = p.deaths = 0; p.streak = p.multi = 0; p.mx = null; p.faction = mode === 'tdm' ? ((i + flip) % 2 ? 'horizon' : 'vanguard') : 'ffa'; });
   emit('map', clientMap(map));
-  pickups = (map.pickups || []).map((d, i) => ({ id: 'm' + i, wi: randOf(POWER), x: d.x, y: d.y, z: d.z, up: true, back: 0, drop: false })); emit('pk', pickupRows()); makeTurrets();
+  pickups = (map.pickups || []).map((d, i) => ({ id: 'm' + i, wi: d.fixed != null ? d.fixed : randOf(POWER), fixed: d.fixed, x: d.x, y: d.y, z: d.z, up: true, back: 0, drop: false })); emit('pk', pickupRows()); makeTurrets();
   emit('vehicles', vehRows());
   emit('match', matchInfo());
   emit('factions', list.map(p => [p.id, p.faction]));
@@ -1132,7 +1204,7 @@ function dropWeapon(p) {   // the dead leave the weapon they were holding at the
 }
 function tickPickups(now) {   // map pickups come back, old drops fade away
   let changed = false;
-  for (let i = pickups.length - 1; i >= 0; i--) { const k = pickups[i]; if (k.drop && now >= k.exp) { pickups.splice(i, 1); changed = true; } else if (!k.up && now >= k.back) { k.up = true; k.wi = randOf(POWER); changed = true; } }
+  for (let i = pickups.length - 1; i >= 0; i--) { const k = pickups[i]; if (k.drop && now >= k.exp) { pickups.splice(i, 1); changed = true; } else if (!k.up && now >= k.back) { k.up = true; k.wi = k.fixed != null ? k.fixed : randOf(POWER); changed = true; } }
   if (changed) emit('pk', pickupRows());
 }
 // One shot's damage: a headshot multiplies it, and a rocket also hurts every enemy near the blast (less the further they are; never you or your team).
@@ -1212,16 +1284,17 @@ function makeTurrets() {   // two sentries at each base entrance, in team deathm
 function tickTurrets(now) {   // a turret sweeps its scanner dome; anything hostile inside it (on foot or driving) is tracked and shot
   for (const t of turrets) {
     const mv = vehicles.find(v => v.sentry === t.id);
-    if (mv && mv.driver) { const D = mv.driver; t.yaw = r3(wrap(D.bot ? D.yaw : mv.yaw)); t.pitch = r3(clamp(D.pitch || 0, -.4, 1.2)); continue; }   // someone is sitting in it: it points where they point and only fires when they do
+    if (mv && mv.driver) { const D = mv.driver; t.yaw = r3(wrap(D.bot ? D.yaw : mv.yaw)); t.pitch = r3(clamp(D.pitch || 0, -1.3, 1.2)); continue; }   // someone is sitting in it: it points where they point and only fires when they do
     let tgt = null, best = TURRET.radius;
     for (const q of players.values()) { if (!q.alive || q.faction === t.faction) continue; const d = Math.hypot(q.x - t.x, q.y + 1 - t.y, q.z - t.z); if (d < best) { best = d; tgt = q; } }
     if (!tgt) continue;
-    const dx = tgt.x - t.x, dy = tgt.y + 1.2 - (t.y + .6), dz = tgt.z - t.z, flat = Math.hypot(dx, dz) || 1, dist = Math.hypot(dx, dy, dz) || 1, want = Math.atan2(-dx, -dz);
-    t.yaw = r3(wrap(t.yaw + clamp(wrap(want - t.yaw), -.22, .22))); t.pitch = r3(clamp(t.pitch + clamp(Math.atan2(dy, flat) - t.pitch, -.15, .15), -.4, 1.2));
+    const dx = tgt.x - t.x, dy = tgt.y + 1.2 - (t.y + TURRET.head), dz = tgt.z - t.z, flat = Math.hypot(dx, dz) || 1, dist = Math.hypot(dx, dy, dz) || 1, want = Math.atan2(-dx, -dz);
+    t.yaw = r3(wrap(t.yaw + clamp(wrap(want - t.yaw), -.22, .22))); t.pitch = r3(clamp(t.pitch + clamp(Math.atan2(dy, flat) - t.pitch, -.15, .15), -1.3, 1.2));   // up on its tower it has to look steeply down at anyone near the foot
     if (now < t.nextShot || Math.abs(wrap(want - t.yaw)) > .12) continue;
-    const o = { x: t.x, y: t.y + .6, z: t.z }, u = { x: dx / dist, y: dy / dist, z: dz / dist };
-    const look = cast(t.sh, o, u, dist); if (look.who !== tgt && look.t < dist - 1 && !(look.veh && look.veh.id === tgt.vehicle)) continue;   // a wall in the way
-    const e = .02 + dist * .0008, d = { x: u.x + (Math.random() - .5) * 2 * e, y: u.y + (Math.random() - .5) * 2 * e, z: u.z + (Math.random() - .5) * 2 * e }, l = Math.hypot(d.x, d.y, d.z);
+    const o = { x: t.x + dx / flat * TURRET.reach, y: t.y + TURRET.head, z: t.z + dz / flat * TURRET.reach };   // the muzzle sticks out past the tower's edge, so the gun can fire straight down at anyone standing at its foot
+    const ox = tgt.x - o.x, oy = tgt.y + 1.2 - o.y, oz = tgt.z - o.z, od = Math.hypot(ox, oy, oz) || 1, u = { x: ox / od, y: oy / od, z: oz / od };
+    const look = cast(t.sh, o, u, od); if (look.who !== tgt && look.t < od - 1 && !(look.veh && look.veh.id === tgt.vehicle)) continue;   // a wall in the way
+    const e = .02 + od * .00053, d = { x: u.x + (Math.random() - .5) * 2 * e, y: u.y + (Math.random() - .5) * 2 * e, z: u.z + (Math.random() - .5) * 2 * e }, l = Math.hypot(d.x, d.y, d.z);
     d.x /= l; d.y /= l; d.z /= l; t.nextShot = now + TURRET.fireRateDelay;
     const hit = cast(t.sh, o, d, TURRET.range), tt = hit.t;
     emit('fx', { a: [r2(o.x + d.x * .8), r2(o.y + d.y * .8), r2(o.z + d.z * .8)], b: [r2(o.x + d.x * tt), r2(o.y + d.y * tt), r2(o.z + d.z * tt)], f: t.faction, s: 'w-issue', i: 0, e: 0 });
@@ -1434,6 +1507,7 @@ function connect(socket, room) {
   on('loadout', d => {   // choose which three weapons you carry (keys 1-3): only ones your level has unlocked
     const now = Date.now(); if (!d || now - me.shopAt < 150) return; me.shopAt = now;
     if (!Number.isInteger(d.slot) || d.slot < 0 || d.slot > 2 || !Number.isInteger(d.wi) || d.wi < 0 || d.wi >= WEAPONS.length) return;
+    if (WEAPONS[d.wi].pickupOnly) return notice(me, 'The ' + WEAPONS[d.wi].name + ' can only be found on the map');
     if (lvOf(me) < WEAPONS[d.wi].unlockLevel) return notice(me, WEAPONS[d.wi].name + ' unlocks at level ' + WEAPONS[d.wi].unlockLevel);
     const pr = profOf(me), lo = cleanLoadout(pr.eq.loadout).slice(); lo[d.slot] = d.wi; pr.eq.loadout = lo; pr.rev++; store.set(me.token, pr);
     me.loadout = loadoutOf(me); me.sock.emit('profile', profileView(me)); notice(me, WEAPONS[d.wi].name + ' is now on key ' + (d.slot + 1) + (me.alive ? ' (ready when you respawn)' : ''));
